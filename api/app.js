@@ -29,6 +29,14 @@ app.use("/admin/queues", serverAdapter.getRouter());
 // ------------------------
 // Endpoints API
 // ------------------------
+app.get("/", (req, res) => {
+  res.send({
+    ok: true,
+    service: "mail-system-api",
+    routes: ["/send", "/mails", "/mails/retry/:id", "/admin/queues"]
+  });
+});
+
 app.post("/send", async (req, res) => {
   const { to, subject, body } = req.body;
 
