@@ -3,15 +3,9 @@ import { sendMail } from "../services/mailer.js";
 import { classifyError } from "../utils/errorClassifier.js";
 import { query } from "../services/db.js";
 import { sendTelegram } from "../alerts/telegram.js";
-import dotenv from "dotenv";
+import { getBullConnectionOptions, redisConfig } from "../config/redis.js";
 
-dotenv.config();
-
-// Configuración de conexión a Redis/Memurai
-const connection = {
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: Number(process.env.REDIS_PORT || 6379),
-};
+const connection = getBullConnectionOptions();
 
 const worker = new Worker(
   "mail-queue", // nombre de la cola
@@ -47,7 +41,15 @@ const worker = new Worker(
       throw err;
     }
   },
-  { connection } // <--- MUY IMPORTANTE
+  { connection }
 );
 
-console.log("Worker running and connected to Redis/Memurai...");
+console.log(`Iniciando worker con Redis en ${redisConfig.host}:${redisConfig.port}`);
+
+worker.on("ready", () => {
+  console.log(`Worker listo y conectado a Redis/Memurai (${redisConfig.host}:${redisConfig.port})`);
+});
+
+worker.on("error", err => {
+  console.error("Error del worker:", err.message);
+});

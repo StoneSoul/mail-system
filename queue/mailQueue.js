@@ -1,13 +1,7 @@
 import { Queue } from "bullmq";
-import Redis from "ioredis";
-import dotenv from "dotenv";
+import { createRedisConnection } from "../config/redis.js";
 
-dotenv.config();
-
-const connection = new Redis({
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: Number(process.env.REDIS_PORT || 6379)
-});
+const connection = createRedisConnection();
 
 export const mailQueue = new Queue("mail-queue", {
   connection,
