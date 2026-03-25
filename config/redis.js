@@ -8,9 +8,11 @@ export const redisConfig = {
   port: Number(process.env.REDIS_PORT || 6379)
 };
 
+export const bullConnection = {
+  ...redisConfig,
+  maxRetriesPerRequest: null
+};
+
 export function createRedisConnection() {
-  return new Redis({
-    ...redisConfig,
-    maxRetriesPerRequest: null
-  });
+  return new Redis(bullConnection);
 }

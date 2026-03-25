@@ -1,10 +1,18 @@
 import { Queue } from "bullmq";
 import { createRedisConnection } from "../config/redis.js";
 
-const connection = createRedisConnection();
+function buildQueueOptions() {
+  const connection = createRedisConnection();
+
+  if (!connection) {
+    throw new Error("No se pudo inicializar la conexión Redis para la cola");
+  }
+
+  return { connection };
+}
 
 export const mailQueue = new Queue("mail-queue", {
-  connection,
+  ...buildQueueOptions(),
   defaultJobOptions: {
     attempts: 5,
     backoff: {

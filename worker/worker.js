@@ -5,7 +5,15 @@ import { query } from "../services/db.js";
 import { sendTelegram } from "../alerts/telegram.js";
 import { createRedisConnection, redisConfig } from "../config/redis.js";
 
-const connection = createRedisConnection();
+function buildWorkerOptions() {
+  const connection = createRedisConnection();
+
+  if (!connection) {
+    throw new Error("No se pudo inicializar la conexión Redis para el worker");
+  }
+
+  return { connection };
+}
 
 const worker = new Worker(
   "mail-queue", // nombre de la cola
@@ -41,7 +49,7 @@ const worker = new Worker(
       throw err;
     }
   },
-  { connection }
+  buildWorkerOptions()
 );
 
 worker.on("ready", () => {
