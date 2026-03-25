@@ -3,9 +3,7 @@ import { sendMail } from "../services/mailer.js";
 import { classifyError } from "../utils/errorClassifier.js";
 import { query } from "../services/db.js";
 import { sendTelegram } from "../alerts/telegram.js";
-import { createRedisConnection, redisConfig } from "../config/redis.js";
-
-const connection = createRedisConnection();
+import { bullConnection, redisConfig } from "../config/redis.js";
 
 const worker = new Worker(
   "mail-queue", // nombre de la cola
@@ -41,7 +39,7 @@ const worker = new Worker(
       throw err;
     }
   },
-  { connection }
+  { connection: bullConnection }
 );
 
 worker.on("ready", () => {
