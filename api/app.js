@@ -24,8 +24,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
 
-const PANEL_USER = process.env.PANEL_USER || "admin";
-const PANEL_PASS = process.env.PANEL_PASS || "admin123";
+function normalizeCredential(rawValue, fallback) {
+  const source = rawValue ?? fallback;
+  return String(source)
+    .trim()
+    .replace(/^["']/, "")
+    .replace(/["']$/, "");
+}
+
+const PANEL_USER = normalizeCredential(process.env.PANEL_USER, "admin");
+const PANEL_PASS = normalizeCredential(process.env.PANEL_PASS, "admin123");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 horas
 const SESSION_COOKIE = "mail_panel_session";
 const sessions = new Map();
@@ -156,20 +164,25 @@ app.get("/", (_req, res) => {
   res.sendFile(panelPath);
 });
 
+app.get("/favicon.ico", (_req, res) => {
+  res.status(204).end();
+});
+
 app.post("/auth/login", (req, res) => {
   const { username, password } = req.body || {};
+  const normalizedUsername = String(username || "").trim();
+  const normalizedPassword = String(password || "").trim();
 
-  if (username !== PANEL_USER || password !== PANEL_PASS) {
+  if (normalizedUsername !== PANEL_USER || normalizedPassword !== PANEL_PASS) {
     return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
   }
 
-  const sessionId = createSession(username);
-  res.setHeader(
-    "Set-Cookie",
-    `${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax`
-  );
+  const sessionId = createSession(normalizedUsername);
+  const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
+  const secureFlag = secure ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax${secureFlag}`);
 
-  return res.json({ ok: true, user: username });
+  return res.json({ ok: true, user: normalizedUsername });
 });
 
 app.post("/auth/logout", authMiddleware, (req, res) => {
