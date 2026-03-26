@@ -117,3 +117,18 @@ Y alertar cuando:
 3. Después sumar pool de Gmail con round-robin y cooldown.
 
 Con esto mantenés control fino, evitás “fallar abierto” y permitís que cada SP elija identidad de envío sin exponer credenciales.
+
+## Cuentas Hostinger cargadas en código
+
+Se agregó una configuración estática en `config/senderProfiles.js` con las cuentas principales de Hostinger y un mapeo perfil->cuenta para uso inmediato por cada SP según `senderProfile`.
+
+Perfiles disponibles en la API (`senderProfile`):
+
+- `default` / `onboarding` -> `imcenvio@enviosimc.info`
+- `facturacion` -> `imcinformes@enviosimc.info`
+- `informes` -> `informeslaboratorio@enviosimc.info`
+- `profesionales` -> `profesionales@enviosimc.info`
+- `agendas` -> `agendas@enviosimc.info`
+- `no-responder` -> `no-responder@enviosimc.info`
+
+Si el perfil no existe, el sistema cae automáticamente al perfil `default`.
