@@ -38,7 +38,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/send", async (req, res) => {
-  const { to, subject, body } = req.body;
+  const { to, subject, body, senderProfile } = req.body;
 
   const result = await query(`
     INSERT INTO MailQueue (to_email, subject, body)
@@ -48,7 +48,7 @@ app.post("/send", async (req, res) => {
 
   const mail = result.recordset[0];
 
-  await mailQueue.add("mail", mail);
+  await mailQueue.add("mail", { ...mail, senderProfile: senderProfile || "default" });
 
   res.send({ ok: true });
 });
@@ -65,7 +65,7 @@ app.post("/mails/retry/:id", async (req, res) => {
   const mail = result.recordset[0];
   if (!mail) return res.status(404).send({ error: "Mail no encontrado" });
 
-  await mailQueue.add("mail", mail);
+  await mailQueue.add("mail", { ...mail, senderProfile: mail.sender_profile || "default" });
   res.send({ ok: true, msg: "Mail reenviado a la cola" });
 });
 
