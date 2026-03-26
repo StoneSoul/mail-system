@@ -115,6 +115,27 @@ function escapeSqlString(value) {
   return String(value).replace(/'/g, "''");
 }
 
+const ERROR_CATEGORY_SQL = `
+  CASE
+    WHEN error_message IS NULL OR LTRIM(RTRIM(error_message)) = '' THEN 'UNKNOWN'
+    WHEN LOWER(error_message) LIKE '%mailbox full%' OR LOWER(error_message) LIKE '%buzon lleno%' OR LOWER(error_message) LIKE '%casilla llena%' THEN 'MAILBOX_FULL'
+    WHEN LOWER(error_message) LIKE '%user unknown%' OR LOWER(error_message) LIKE '%mailbox unavailable%' OR LOWER(error_message) LIKE '%no existe%' OR LOWER(error_message) LIKE '%recipient address rejected%' THEN 'MAILBOX_NOT_FOUND'
+    WHEN LOWER(error_message) LIKE '%rate limit%' OR LOWER(error_message) LIKE '%too many%' OR LOWER(error_message) LIKE '%throttl%' OR LOWER(error_message) LIKE '%se agoto%' OR LOWER(error_message) LIKE '%quota%' THEN 'SENDING_LIMIT'
+    WHEN LOWER(error_message) LIKE '%timeout%' OR LOWER(error_message) LIKE '%temporar%' OR LOWER(error_message) LIKE '%connection%' OR LOWER(error_message) LIKE '%try again%' THEN 'TEMPORARY'
+    ELSE 'OTHER'
+  END
+`;
+
+const PERMANENT_ERROR_CATEGORIES = ["MAILBOX_FULL", "MAILBOX_NOT_FOUND"];
+const ALLOWED_ERROR_CATEGORIES = [
+  "MAILBOX_FULL",
+  "MAILBOX_NOT_FOUND",
+  "SENDING_LIMIT",
+  "TEMPORARY",
+  "OTHER",
+  "UNKNOWN"
+];
+
 // ------------------------
 // Bull Board setup
 // ------------------------
@@ -218,11 +239,26 @@ app.get("/api/metrics", authMiddleware, async (_req, res) => {
 app.get("/api/queue", authMiddleware, async (req, res) => {
   try {
     const status = req.query.status;
-    const where = status ? "WHERE [status]=@status" : "";
+    const errorCategory = req.query.errorCategory;
+    const inputs = [];
+    const whereClauses = [];
+
+    if (status) {
+      whereClauses.push("[status]=@status");
+      inputs.push({ name: "status", type: sql.NVarChar(20), value: status });
+    }
+    if (errorCategory && ALLOWED_ERROR_CATEGORIES.includes(errorCategory)) {
+      whereClauses.push(`${ERROR_CATEGORY_SQL}=@errorCategory`);
+      inputs.push({ name: "errorCategory", type: sql.NVarChar(50), value: errorCategory });
+    }
+
+    const where = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
     const data = await sqlQuery(
-      `SELECT TOP 200 id,to_email,[subject],[status],retries,error_message,MailProfile,created_at,last_attempt
+      `SELECT TOP 200 id,to_email,[subject],[status],retries,error_message,MailProfile,created_at,last_attempt,
+       ${ERROR_CATEGORY_SQL} AS error_category,
+       CASE WHEN ${ERROR_CATEGORY_SQL} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable
        FROM dbo.MailQueue ${where} ORDER BY id DESC`,
-      [{ name: "status", type: sql.NVarChar(20), value: status || null }]
+      inputs
     );
     res.json(data);
   } catch (e) {
@@ -245,11 +281,35 @@ app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
 
 app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
   try {
-    const { user = "web" } = req.body || {};
-    await executeProcedure("dbo.SP_ADMIN_REQUEUE_FAILED", [
-      { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
-    ]);
-    res.json({ ok: true });
+    const { user = "web", skipCategories = PERMANENT_ERROR_CATEGORIES } = req.body || {};
+    const normalized = Array.isArray(skipCategories)
+      ? skipCategories.filter(x => ALLOWED_ERROR_CATEGORIES.includes(x))
+      : PERMANENT_ERROR_CATEGORIES;
+
+    const notInClause = normalized.length
+      ? `AND ${ERROR_CATEGORY_SQL} NOT IN (${normalized.map(x => `'${x}'`).join(",")})`
+      : "";
+
+    const sqlText = `
+      UPDATE dbo.MailQueue
+      SET [status] = N'Waiting',
+          retries = 0,
+          error_message = NULL,
+          error_type = NULL,
+          last_attempt = NULL
+      WHERE [status] = N'Failed' ${notInClause};
+    `;
+
+    await sqlQuery(sqlText);
+    await sqlQuery(
+      `INSERT INTO dbo.MailAdminAudit(Action, Params, ExecutedBy, Result)
+       VALUES (N'REQUEUE_FAILED_FILTERED', @params, @user, N'OK')`,
+      [
+        { name: "params", type: sql.NVarChar(sql.MAX), value: `skipCategories=${normalized.join(",")}` },
+        { name: "user", type: sql.NVarChar(200), value: user }
+      ]
+    );
+    res.json({ ok: true, skipped: normalized });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
