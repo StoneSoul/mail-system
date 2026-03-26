@@ -309,13 +309,92 @@ app.get("/mails", authMiddleware, async (_req, res) => {
 });
 
 app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
-  const id = Number(req.params.id);
-  const result = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
-  const mail = result.recordset[0];
-  if (!mail) return res.status(404).send({ error: "Mail no encontrado" });
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).send({ error: "ID inválido" });
+    }
 
-  await mailQueue.add("mail", { ...mail, senderProfile: mail.sender_profile || "default" });
-  res.send({ ok: true, msg: "Mail reenviado a la cola" });
+    const queueColumns = await resolveMailQueueColumns();
+    if (!queueColumns.statusForWhere) {
+      return res.status(500).json({ error: "No se detectó una columna de estado compatible." });
+    }
+
+    const result = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
+    const mail = result.recordset[0];
+    if (!mail) return res.status(404).send({ error: "Mail no encontrado" });
+
+    const currentStatus = String(mail.status || mail.estado || "");
+    if (currentStatus === "Sent") {
+      return res.status(400).json({ error: "No se puede reintentar un mail ya enviado." });
+    }
+
+    const setClauses = [`${queueColumns.statusForWhere} = N'Waiting'`];
+    if (queueColumns.errorMessageForUpdate) setClauses.push(`${queueColumns.errorMessageForUpdate} = NULL`);
+    if (queueColumns.errorTypeForUpdate) setClauses.push(`${queueColumns.errorTypeForUpdate} = NULL`);
+    if (queueColumns.lastAttemptForUpdate) setClauses.push(`${queueColumns.lastAttemptForUpdate} = NULL`);
+
+    await sqlQuery(
+      `UPDATE dbo.MailQueue
+       SET ${setClauses.join(", ")}
+       WHERE id = @id;`,
+      [{ name: "id", type: sql.Int, value: id }]
+    );
+
+    const refreshed = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
+    const updatedMail = refreshed.recordset[0];
+    await mailQueue.add("mail", { ...updatedMail, senderProfile: updatedMail.sender_profile || "default" });
+
+    res.send({ ok: true, msg: "Mail reenviado a la cola" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/queue/delete", authMiddleware, async (req, res) => {
+  try {
+    const { ids, status, errorCategory } = req.body || {};
+    const queueColumns = await resolveMailQueueColumns();
+    const errorCategorySql = buildErrorCategorySql(queueColumns.errorMessage);
+    const whereClauses = [];
+    const inputs = [];
+
+    if (Array.isArray(ids) && ids.length > 0) {
+      const validIds = ids
+        .map(x => Number(x))
+        .filter(x => Number.isInteger(x) && x > 0);
+
+      if (validIds.length === 0) {
+        return res.status(400).json({ error: "No hay IDs válidos para eliminar." });
+      }
+
+      whereClauses.push(`id IN (${validIds.join(",")})`);
+    } else {
+      if (status && queueColumns.statusForWhere) {
+        whereClauses.push(`${queueColumns.statusForWhere}=@status`);
+        inputs.push({ name: "status", type: sql.NVarChar(20), value: status });
+      }
+
+      if (errorCategory && ALLOWED_ERROR_CATEGORIES.includes(errorCategory)) {
+        whereClauses.push(`${errorCategorySql}=@errorCategory`);
+        inputs.push({ name: "errorCategory", type: sql.NVarChar(50), value: errorCategory });
+      }
+    }
+
+    if (whereClauses.length === 0) {
+      return res.status(400).json({ error: "Debes indicar IDs o al menos un filtro de eliminación." });
+    }
+
+    await sqlQuery(
+      `DELETE FROM dbo.MailQueue
+       WHERE ${whereClauses.join(" AND ")};`,
+      inputs
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ------------------------
