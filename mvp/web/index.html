@@ -51,10 +51,17 @@
     #loginBox{max-width:360px;border:1px solid var(--border);padding:20px;border-radius:12px;background:#fff}
     #loginError{color:#c62828}
     #feedback{padding:0 20px 14px;color:var(--muted)}
-    .sp-inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .sp-inline .field{min-width:280px;flex:1}
-    .sp-row{display:flex;gap:8px;align-items:center}
+    .sp-inline{display:grid;grid-template-columns:minmax(160px,.45fr) minmax(460px,1fr);gap:10px;align-items:end;width:100%}
+    .sp-inline .field{min-width:0}
+    .sp-row{display:grid;grid-template-columns:minmax(340px,1fr) auto;gap:8px;align-items:center}
     .sp-row button{white-space:nowrap}
+    #remoteTarget{max-width:180px}
+    #producerSelect{min-width:340px}
+    @media (max-width: 880px){
+      .sp-inline{grid-template-columns:1fr}
+      .sp-row{grid-template-columns:1fr}
+      #remoteTarget,#producerSelect{max-width:none;min-width:0}
+    }
     .info-box{margin:0 20px 16px;padding:12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc}
     .small{font-size:12px;color:var(--muted);margin:2px 0}
   </style>
@@ -107,8 +114,8 @@
           <div class="field">
             <label>Ambiente remoto</label>
             <select id="remoteTarget" onchange="loadProducers()">
-              <option value="prod">Producción (PROD_DB_*)</option>
-              <option value="test">Prueba (TEST_DB_*)</option>
+              <option value="prod">DTTPROD</option>
+              <option value="test">DTTPRUEBA</option>
             </select>
           </div>
           <div class="field">
@@ -321,6 +328,23 @@ let data = [];
 
 let producersCatalog = [];
 
+const FALLBACK_PRODUCERS_BY_TARGET = {
+  prod: [
+    {
+      procName: "SP_ENVIO_INFORMEPACIENTE_1",
+      label: "Informe Paciente (Producción)",
+      description: "Genera correos de informe para pacientes en entorno productivo."
+    }
+  ],
+  test: [
+    {
+      procName: "SP_ENVIOMAILPERSONAL_PRUEBA",
+      label: "Envío Personal (Prueba)",
+      description: "SP de pruebas para validar envío controlado."
+    }
+  ]
+};
+
 function getRemoteTarget(){
   return document.getElementById("remoteTarget")?.value || "prod";
 }
@@ -336,8 +360,30 @@ function renderProducerDescription(){
 async function loadProducers(){
   try{
     const target = getRemoteTarget();
-    const data = await j(`${API}/actions/producers?target=${encodeURIComponent(target)}`);
-    producersCatalog = Array.isArray(data.producers) ? data.producers : [];
+    let data = null;
+    let producersEndpointMissing = false;
+    try {
+      data = await j(`${API}/actions/producers?target=${encodeURIComponent(target)}`);
+    } catch (err) {
+      if (String(err.message || "").includes("404")) {
+        producersEndpointMissing = true;
+      } else {
+        throw err;
+      }
+    }
+
+    if (producersEndpointMissing) {
+      const diagnostics = await tryGet([
+        `${API}/db/tables`,
+        "/api/db/tables",
+        "/db/tables"
+      ]);
+      const byTarget = diagnostics?.producersByTarget || FALLBACK_PRODUCERS_BY_TARGET;
+      data = { producers: byTarget[target] || [] };
+      feedback.textContent = "Catálogo de SP cargado con endpoint alternativo (/api/db/tables).";
+    }
+
+    producersCatalog = Array.isArray(data?.producers) ? data.producers : [];
     const select = document.getElementById("producerSelect");
     const current = select.value;
     select.innerHTML = "<option value=''>Seleccioná un SP</option>" + producersCatalog
