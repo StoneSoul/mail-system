@@ -118,38 +118,53 @@ const DEFAULT_PRODUCERS_BY_TARGET = {
       label: "Envío Personal (Prueba)",
       description: "SP de pruebas para validar envío controlado."
     }
+  ],
+  express: [
+    {
+      procName: "SP_MAILQUEUE_SEND",
+      label: "Mail Queue Sender (SQL Express)",
+      description: "SP del relay en SRV-EnviosMail para despachar cola."
+    }
   ]
 };
 
-const REMOTE_DB_TARGETS = new Set(["prod", "test"]);
+const REMOTE_DB_TARGETS = new Set(["prod", "test", "express"]);
 
 function resolveRemoteTarget(rawTarget) {
   const normalized = String(rawTarget || "prod").toLowerCase();
   if (!REMOTE_DB_TARGETS.has(normalized)) {
-    throw new Error(`Target inválido: ${rawTarget}. Usá 'prod' o 'test'.`);
+    throw new Error(`Target inválido: ${rawTarget}. Usá 'prod', 'test' o 'express'.`);
   }
   return normalized;
 }
 
 function parseProducerList(rawList, target) {
+  const targetLabelByCode = {
+    prod: "Producción",
+    test: "Prueba",
+    express: "SQL Express"
+  };
+
   return String(rawList || "")
     .split(",")
     .map(proc => proc.trim())
     .filter(Boolean)
     .map(procName => ({
       procName,
-      label: `${procName} (${target === "prod" ? "Producción" : "Prueba"})`,
-      description: `SP configurado para ${target === "prod" ? "Producción" : "Prueba"}.`
+      label: `${procName} (${targetLabelByCode[target] || target})`,
+      description: `SP configurado para ${targetLabelByCode[target] || target}.`
     }));
 }
 
 function getAvailableProducersByTarget() {
   const prodFromEnv = parseProducerList(process.env.PROD_SP_LIST, "prod");
   const testFromEnv = parseProducerList(process.env.TEST_SP_LIST, "test");
+  const expressFromEnv = parseProducerList(process.env.EXPRESS_SP_LIST, "express");
 
   return {
     prod: prodFromEnv.length ? prodFromEnv : DEFAULT_PRODUCERS_BY_TARGET.prod,
-    test: testFromEnv.length ? testFromEnv : DEFAULT_PRODUCERS_BY_TARGET.test
+    test: testFromEnv.length ? testFromEnv : DEFAULT_PRODUCERS_BY_TARGET.test,
+    express: expressFromEnv.length ? expressFromEnv : DEFAULT_PRODUCERS_BY_TARGET.express
   };
 }
 
@@ -158,7 +173,7 @@ function getAvailableProducers(target = null) {
   if (target) {
     return byTarget[target] || [];
   }
-  return [...byTarget.prod, ...byTarget.test];
+  return [...byTarget.prod, ...byTarget.test, ...byTarget.express];
 }
 
 const MAILDB_TABLES = [
