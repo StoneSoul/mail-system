@@ -144,6 +144,33 @@ const ALLOWED_ERROR_CATEGORIES = [
   "UNKNOWN"
 ];
 
+let cachedMailProfileExpression = null;
+
+async function resolveMailProfileExpression() {
+  if (cachedMailProfileExpression) return cachedMailProfileExpression;
+
+  const columns = await sqlQuery(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo'
+      AND TABLE_NAME = 'MailQueue'
+      AND COLUMN_NAME IN ('MailProfile', 'sender_profile')
+  `);
+
+  const names = new Set(columns.map(row => String(row.COLUMN_NAME)));
+  if (names.has("MailProfile")) {
+    cachedMailProfileExpression = "MailProfile";
+    return cachedMailProfileExpression;
+  }
+  if (names.has("sender_profile")) {
+    cachedMailProfileExpression = "sender_profile AS MailProfile";
+    return cachedMailProfileExpression;
+  }
+
+  cachedMailProfileExpression = "CAST(NULL AS NVARCHAR(128)) AS MailProfile";
+  return cachedMailProfileExpression;
+}
+
 // ------------------------
 // Bull Board setup
 // ------------------------
@@ -242,9 +269,24 @@ app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
 // ------------------------
 app.get("/api/metrics", authMiddleware, async (_req, res) => {
   try {
-    const data = await sqlQuery("SELECT * FROM dbo.VW_MAILQUEUE_METRICS");
+    let data;
+    try {
+      data = await sqlQuery("SELECT * FROM dbo.VW_MAILQUEUE_METRICS");
+    } catch (err) {
+      const missingView = String(err?.message || "").toLowerCase().includes("vw_mailqueue_metrics");
+      if (!missingView) throw err;
+      data = await sqlQuery(`
+        SELECT
+          SUM(CASE WHEN [status] IN (N'Waiting',N'P',N'Processing') THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN [status] = N'Sent' THEN 1 ELSE 0 END) AS sent,
+          SUM(CASE WHEN [status] = N'Failed' THEN 1 ELSE 0 END) AS failed,
+          COUNT(*) AS total
+        FROM dbo.MailQueue
+      `);
+    }
     res.json(data[0] || {});
   } catch (e) {
+    console.error("[/api/metrics] error", e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -266,15 +308,28 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
     }
 
     const where = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
+    const mailProfileExpression = await resolveMailProfileExpression();
+
     const data = await sqlQuery(
-      `SELECT TOP 200 id,to_email,[subject],[status],retries,error_message,MailProfile,created_at,last_attempt,
-       ${ERROR_CATEGORY_SQL} AS error_category,
-       CASE WHEN ${ERROR_CATEGORY_SQL} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable
-       FROM dbo.MailQueue ${where} ORDER BY id DESC`,
+      `SELECT TOP 200
+         id,
+         to_email,
+         [subject],
+         [status],
+         retries,
+         error_message,
+         ${ERROR_CATEGORY_SQL} AS error_category,
+         CASE WHEN ${ERROR_CATEGORY_SQL} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable,
+         ${mailProfileExpression},
+         created_at,
+         last_attempt
+       FROM dbo.MailQueue ${where}
+       ORDER BY id DESC`,
       inputs
     );
     res.json(data);
   } catch (e) {
+    console.error("[/api/queue] error", e);
     res.status(500).json({ error: e.message });
   }
 });
