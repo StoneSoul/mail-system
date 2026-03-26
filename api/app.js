@@ -152,11 +152,11 @@ async function resolveMailQueueColumns() {
 
   const existing = new Set(rows.map(row => String(row.COLUMN_NAME)));
 
-  function pick(candidates, fallbackAlias) {
+  function pick(candidates) {
     for (const candidate of candidates) {
       if (existing.has(candidate)) return asSqlIdentifier(candidate);
     }
-    return `CAST(NULL AS NVARCHAR(4000)) AS ${fallbackAlias}`;
+    return `CAST(NULL AS NVARCHAR(4000))`;
   }
 
   function pickForUpdate(candidates) {
@@ -170,13 +170,13 @@ async function resolveMailQueueColumns() {
   const retriesColumn = pickForUpdate(["retries", "retry_count", "reintentos"]);
 
   cachedMailQueueColumns = {
-    toEmail: pick(["to_email", "to", "recipient", "email", "destinatario", "correo"], "to_email"),
-    subject: pick(["subject", "asunto", "title", "titulo"], "subject"),
-    status: statusColumn ? statusColumn : "CAST(NULL AS NVARCHAR(20)) AS [status]",
-    retries: retriesColumn ? retriesColumn : "CAST(0 AS INT) AS retries",
-    errorMessage: pick(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"], "error_message"),
-    createdAt: pick(["created_at", "createdon", "created_date", "fecha_creacion", "created"], "created_at"),
-    lastAttempt: pick(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"], "last_attempt"),
+    toEmail: pick(["to_email", "to", "recipient", "email", "destinatario", "correo"]),
+    subject: pick(["subject", "asunto", "title", "titulo"]),
+    status: statusColumn ? statusColumn : "CAST(NULL AS NVARCHAR(20))",
+    retries: retriesColumn ? retriesColumn : "CAST(0 AS INT)",
+    errorMessage: pick(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
+    createdAt: pick(["created_at", "createdon", "created_date", "fecha_creacion", "created"]),
+    lastAttempt: pick(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"]),
     statusForWhere: statusColumn,
     retriesForUpdate: retriesColumn,
     errorMessageForUpdate: pickForUpdate(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
