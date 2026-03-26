@@ -104,13 +104,22 @@ const ALLOWED_ERROR_CATEGORIES = [
   "UNKNOWN"
 ];
 
-const AVAILABLE_PRODUCERS = [
-  {
-    procName: "SP_ENVIO_INFORMEPACIENTE_1",
-    label: "Informe Paciente",
-    description: "Prueba actual: genera correos de informe para pacientes."
-  }
-];
+const DEFAULT_PRODUCERS_BY_TARGET = {
+  prod: [
+    {
+      procName: "SP_ENVIO_INFORMEPACIENTE_1",
+      label: "Informe Paciente (Producción)",
+      description: "Genera correos de informe para pacientes en entorno productivo."
+    }
+  ],
+  test: [
+    {
+      procName: "SP_ENVIOMAILPERSONAL_PRUEBA",
+      label: "Envío Personal (Prueba)",
+      description: "SP de pruebas para validar envío controlado."
+    }
+  ]
+};
 
 const REMOTE_DB_TARGETS = new Set(["prod", "test"]);
 
@@ -120,6 +129,36 @@ function resolveRemoteTarget(rawTarget) {
     throw new Error(`Target inválido: ${rawTarget}. Usá 'prod' o 'test'.`);
   }
   return normalized;
+}
+
+function parseProducerList(rawList, target) {
+  return String(rawList || "")
+    .split(",")
+    .map(proc => proc.trim())
+    .filter(Boolean)
+    .map(procName => ({
+      procName,
+      label: `${procName} (${target === "prod" ? "Producción" : "Prueba"})`,
+      description: `SP configurado para ${target === "prod" ? "Producción" : "Prueba"}.`
+    }));
+}
+
+function getAvailableProducersByTarget() {
+  const prodFromEnv = parseProducerList(process.env.PROD_SP_LIST, "prod");
+  const testFromEnv = parseProducerList(process.env.TEST_SP_LIST, "test");
+
+  return {
+    prod: prodFromEnv.length ? prodFromEnv : DEFAULT_PRODUCERS_BY_TARGET.prod,
+    test: testFromEnv.length ? testFromEnv : DEFAULT_PRODUCERS_BY_TARGET.test
+  };
+}
+
+function getAvailableProducers(target = null) {
+  const byTarget = getAvailableProducersByTarget();
+  if (target) {
+    return byTarget[target] || [];
+  }
+  return [...byTarget.prod, ...byTarget.test];
 }
 
 const MAILDB_TABLES = [
@@ -657,7 +696,8 @@ app.get("/api/db/tables", authMiddleware, async (_req, res) => {
     res.json({
       ok: true,
       queueSourceTable: "dbo.MailQueue",
-      producers: AVAILABLE_PRODUCERS,
+      producers: getAvailableProducers(),
+      producersByTarget: getAvailableProducersByTarget(),
       tables: tableStats
     });
   } catch (e) {
@@ -665,8 +705,17 @@ app.get("/api/db/tables", authMiddleware, async (_req, res) => {
   }
 });
 
-app.get("/api/actions/producers", authMiddleware, (_req, res) => {
-  res.json({ ok: true, producers: AVAILABLE_PRODUCERS });
+app.get("/api/actions/producers", authMiddleware, (req, res) => {
+  try {
+    const target = req.query?.target ? resolveRemoteTarget(req.query.target) : null;
+    res.json({
+      ok: true,
+      producers: getAvailableProducers(target),
+      producersByTarget: getAvailableProducersByTarget()
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
@@ -739,7 +788,7 @@ app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "Debes indicar procName." });
     }
 
-    const knownProc = AVAILABLE_PRODUCERS.some(proc => proc.procName === procName);
+    const knownProc = getAvailableProducers(remoteTarget).some(proc => proc.procName === procName);
     if (!knownProc) {
       return res.status(400).json({ error: `SP no registrado en el panel: ${procName}` });
     }
