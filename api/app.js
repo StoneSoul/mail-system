@@ -123,17 +123,6 @@ function escapeSqlString(value) {
   return String(value).replace(/'/g, "''");
 }
 
-const ERROR_CATEGORY_SQL = `
-  CASE
-    WHEN error_message IS NULL OR LTRIM(RTRIM(error_message)) = '' THEN 'UNKNOWN'
-    WHEN LOWER(error_message) LIKE '%mailbox full%' OR LOWER(error_message) LIKE '%buzon lleno%' OR LOWER(error_message) LIKE '%casilla llena%' THEN 'MAILBOX_FULL'
-    WHEN LOWER(error_message) LIKE '%user unknown%' OR LOWER(error_message) LIKE '%mailbox unavailable%' OR LOWER(error_message) LIKE '%no existe%' OR LOWER(error_message) LIKE '%recipient address rejected%' THEN 'MAILBOX_NOT_FOUND'
-    WHEN LOWER(error_message) LIKE '%rate limit%' OR LOWER(error_message) LIKE '%too many%' OR LOWER(error_message) LIKE '%throttl%' OR LOWER(error_message) LIKE '%se agoto%' OR LOWER(error_message) LIKE '%quota%' THEN 'SENDING_LIMIT'
-    WHEN LOWER(error_message) LIKE '%timeout%' OR LOWER(error_message) LIKE '%temporar%' OR LOWER(error_message) LIKE '%connection%' OR LOWER(error_message) LIKE '%try again%' THEN 'TEMPORARY'
-    ELSE 'OTHER'
-  END
-`;
-
 const PERMANENT_ERROR_CATEGORIES = ["MAILBOX_FULL", "MAILBOX_NOT_FOUND"];
 const ALLOWED_ERROR_CATEGORIES = [
   "MAILBOX_FULL",
@@ -145,6 +134,71 @@ const ALLOWED_ERROR_CATEGORIES = [
 ];
 
 let cachedMailProfileExpression = null;
+let cachedMailQueueColumns = null;
+
+function asSqlIdentifier(columnName) {
+  return `[${String(columnName).replace(/]/g, "]]")}]`;
+}
+
+async function resolveMailQueueColumns() {
+  if (cachedMailQueueColumns) return cachedMailQueueColumns;
+
+  const rows = await sqlQuery(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo'
+      AND TABLE_NAME = 'MailQueue'
+  `);
+
+  const existing = new Set(rows.map(row => String(row.COLUMN_NAME)));
+
+  function pick(candidates, fallbackAlias) {
+    for (const candidate of candidates) {
+      if (existing.has(candidate)) return asSqlIdentifier(candidate);
+    }
+    return `CAST(NULL AS NVARCHAR(4000)) AS ${fallbackAlias}`;
+  }
+
+  function pickForUpdate(candidates) {
+    for (const candidate of candidates) {
+      if (existing.has(candidate)) return asSqlIdentifier(candidate);
+    }
+    return null;
+  }
+
+  const statusColumn = pickForUpdate(["status", "estado"]);
+  const retriesColumn = pickForUpdate(["retries", "retry_count", "reintentos"]);
+
+  cachedMailQueueColumns = {
+    toEmail: pick(["to_email", "to", "recipient", "email", "destinatario", "correo"], "to_email"),
+    subject: pick(["subject", "asunto", "title", "titulo"], "subject"),
+    status: statusColumn ? statusColumn : "CAST(NULL AS NVARCHAR(20)) AS [status]",
+    retries: retriesColumn ? retriesColumn : "CAST(0 AS INT) AS retries",
+    errorMessage: pick(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"], "error_message"),
+    createdAt: pick(["created_at", "createdon", "created_date", "fecha_creacion", "created"], "created_at"),
+    lastAttempt: pick(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"], "last_attempt"),
+    statusForWhere: statusColumn,
+    retriesForUpdate: retriesColumn,
+    errorMessageForUpdate: pickForUpdate(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
+    errorTypeForUpdate: pickForUpdate(["error_type", "tipo_error", "error_kind"]),
+    lastAttemptForUpdate: pickForUpdate(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"])
+  };
+
+  return cachedMailQueueColumns;
+}
+
+function buildErrorCategorySql(errorMessageExpression) {
+  return `
+  CASE
+    WHEN ${errorMessageExpression} IS NULL OR LTRIM(RTRIM(${errorMessageExpression})) = '' THEN 'UNKNOWN'
+    WHEN LOWER(${errorMessageExpression}) LIKE '%mailbox full%' OR LOWER(${errorMessageExpression}) LIKE '%buzon lleno%' OR LOWER(${errorMessageExpression}) LIKE '%casilla llena%' THEN 'MAILBOX_FULL'
+    WHEN LOWER(${errorMessageExpression}) LIKE '%user unknown%' OR LOWER(${errorMessageExpression}) LIKE '%mailbox unavailable%' OR LOWER(${errorMessageExpression}) LIKE '%no existe%' OR LOWER(${errorMessageExpression}) LIKE '%recipient address rejected%' THEN 'MAILBOX_NOT_FOUND'
+    WHEN LOWER(${errorMessageExpression}) LIKE '%rate limit%' OR LOWER(${errorMessageExpression}) LIKE '%too many%' OR LOWER(${errorMessageExpression}) LIKE '%throttl%' OR LOWER(${errorMessageExpression}) LIKE '%se agoto%' OR LOWER(${errorMessageExpression}) LIKE '%quota%' THEN 'SENDING_LIMIT'
+    WHEN LOWER(${errorMessageExpression}) LIKE '%timeout%' OR LOWER(${errorMessageExpression}) LIKE '%temporar%' OR LOWER(${errorMessageExpression}) LIKE '%connection%' OR LOWER(${errorMessageExpression}) LIKE '%try again%' THEN 'TEMPORARY'
+    ELSE 'OTHER'
+  END
+`;
+}
 
 async function resolveMailProfileExpression() {
   if (cachedMailProfileExpression) return cachedMailProfileExpression;
@@ -295,15 +349,17 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
   try {
     const status = req.query.status;
     const errorCategory = req.query.errorCategory;
+    const queueColumns = await resolveMailQueueColumns();
+    const errorCategorySql = buildErrorCategorySql(queueColumns.errorMessage);
     const inputs = [];
     const whereClauses = [];
 
-    if (status) {
-      whereClauses.push("[status]=@status");
+    if (status && queueColumns.statusForWhere) {
+      whereClauses.push(`${queueColumns.statusForWhere}=@status`);
       inputs.push({ name: "status", type: sql.NVarChar(20), value: status });
     }
     if (errorCategory && ALLOWED_ERROR_CATEGORIES.includes(errorCategory)) {
-      whereClauses.push(`${ERROR_CATEGORY_SQL}=@errorCategory`);
+      whereClauses.push(`${errorCategorySql}=@errorCategory`);
       inputs.push({ name: "errorCategory", type: sql.NVarChar(50), value: errorCategory });
     }
 
@@ -313,16 +369,16 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
     const data = await sqlQuery(
       `SELECT TOP 200
          id,
-         to_email,
-         [subject],
-         [status],
-         retries,
-         error_message,
-         ${ERROR_CATEGORY_SQL} AS error_category,
-         CASE WHEN ${ERROR_CATEGORY_SQL} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable,
+         ${queueColumns.toEmail} AS to_email,
+         ${queueColumns.subject} AS [subject],
+         ${queueColumns.status} AS [status],
+         ${queueColumns.retries} AS retries,
+         ${queueColumns.errorMessage} AS error_message,
+         ${errorCategorySql} AS error_category,
+         CASE WHEN ${errorCategorySql} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable,
          ${mailProfileExpression},
-         created_at,
-         last_attempt
+         ${queueColumns.createdAt} AS created_at,
+         ${queueColumns.lastAttempt} AS last_attempt
        FROM dbo.MailQueue ${where}
        ORDER BY id DESC`,
       inputs
@@ -350,22 +406,31 @@ app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
 app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
   try {
     const { user = "web", skipCategories = PERMANENT_ERROR_CATEGORIES } = req.body || {};
+    const queueColumns = await resolveMailQueueColumns();
+    const errorCategorySql = buildErrorCategorySql(queueColumns.errorMessage);
     const normalized = Array.isArray(skipCategories)
       ? skipCategories.filter(x => ALLOWED_ERROR_CATEGORIES.includes(x))
       : PERMANENT_ERROR_CATEGORIES;
 
     const notInClause = normalized.length
-      ? `AND ${ERROR_CATEGORY_SQL} NOT IN (${normalized.map(x => `'${x}'`).join(",")})`
+      ? `AND ${errorCategorySql} NOT IN (${normalized.map(x => `'${x}'`).join(",")})`
       : "";
+
+    const setClauses = [];
+    if (queueColumns.statusForWhere) setClauses.push(`${queueColumns.statusForWhere} = N'Waiting'`);
+    if (queueColumns.retriesForUpdate) setClauses.push(`${queueColumns.retriesForUpdate} = 0`);
+    if (queueColumns.errorMessageForUpdate) setClauses.push(`${queueColumns.errorMessageForUpdate} = NULL`);
+    if (queueColumns.errorTypeForUpdate) setClauses.push(`${queueColumns.errorTypeForUpdate} = NULL`);
+    if (queueColumns.lastAttemptForUpdate) setClauses.push(`${queueColumns.lastAttemptForUpdate} = NULL`);
+
+    if (!queueColumns.statusForWhere || setClauses.length === 0) {
+      return res.status(500).json({ error: "No se detectaron columnas compatibles para reencolar." });
+    }
 
     const sqlText = `
       UPDATE dbo.MailQueue
-      SET [status] = N'Waiting',
-          retries = 0,
-          error_message = NULL,
-          error_type = NULL,
-          last_attempt = NULL
-      WHERE [status] = N'Failed' ${notInClause};
+      SET ${setClauses.join(",\n          ")}
+      WHERE ${queueColumns.statusForWhere} = N'Failed' ${notInClause};
     `;
 
     await sqlQuery(sqlText);
