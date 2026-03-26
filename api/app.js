@@ -1,6 +1,9 @@
 import express from "express";
 import sql from "mssql";
 import dotenv from "dotenv";
+import crypto from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
 import { mailQueue } from "../queue/mailQueue.js";
 import { query } from "../services/db.js";
 
@@ -13,6 +16,16 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
+
+const PANEL_USER = process.env.PANEL_USER || "admin";
+const PANEL_PASS = process.env.PANEL_PASS || "admin123";
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 horas
+const SESSION_COOKIE = "mail_panel_session";
+const sessions = new Map();
+
 const sqlConfig = {
   user: process.env.DB_USER || process.env.SQL_USER,
   password: process.env.DB_PASS || process.env.SQL_PASSWORD,
@@ -23,6 +36,54 @@ const sqlConfig = {
     trustServerCertificate: true
   }
 };
+
+function parseCookies(req) {
+  const cookieHeader = req.headers.cookie || "";
+  return Object.fromEntries(
+    cookieHeader
+      .split(";")
+      .map(chunk => chunk.trim())
+      .filter(Boolean)
+      .map(chunk => {
+        const idx = chunk.indexOf("=");
+        if (idx < 0) return [chunk, ""];
+        return [chunk.slice(0, idx), decodeURIComponent(chunk.slice(idx + 1))];
+      })
+  );
+}
+
+function createSession(username) {
+  const sessionId = crypto.randomBytes(32).toString("hex");
+  sessions.set(sessionId, {
+    username,
+    expiresAt: Date.now() + SESSION_TTL_MS
+  });
+  return sessionId;
+}
+
+function getSession(req) {
+  const cookies = parseCookies(req);
+  const sessionId = cookies[SESSION_COOKIE];
+  if (!sessionId) return null;
+
+  const data = sessions.get(sessionId);
+  if (!data) return null;
+  if (data.expiresAt < Date.now()) {
+    sessions.delete(sessionId);
+    return null;
+  }
+
+  return { sessionId, ...data };
+}
+
+function authMiddleware(req, res, next) {
+  const session = getSession(req);
+  if (!session) {
+    return res.status(401).json({ ok: false, error: "No autorizado" });
+  }
+  req.session = session;
+  next();
+}
 
 async function sqlQuery(text, inputs = []) {
   const pool = await sql.connect(sqlConfig);
@@ -58,31 +119,54 @@ createBullBoard({
   serverAdapter
 });
 
-app.use("/admin/queues", serverAdapter.getRouter());
+app.use("/admin/queues", authMiddleware, serverAdapter.getRouter());
+
+// ------------------------
+// Panel + auth simple
+// ------------------------
+app.get("/", (_req, res) => {
+  res.sendFile(panelPath);
+});
+
+app.post("/auth/login", (req, res) => {
+  const { username, password } = req.body || {};
+
+  if (username !== PANEL_USER || password !== PANEL_PASS) {
+    return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
+  }
+
+  const sessionId = createSession(username);
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; SameSite=Lax`
+  );
+
+  return res.json({ ok: true, user: username });
+});
+
+app.post("/auth/logout", authMiddleware, (req, res) => {
+  sessions.delete(req.session.sessionId);
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax`);
+  return res.json({ ok: true });
+});
+
+app.get("/auth/status", (req, res) => {
+  const session = getSession(req);
+  return res.json({ ok: true, loggedIn: Boolean(session), user: session?.username || null });
+});
 
 // ------------------------
 // Endpoints API
 // ------------------------
-app.get("/", (_req, res) => {
+app.get("/health", (_req, res) => {
   res.send({
     ok: true,
     service: "mail-system-api",
-    routes: [
-      "/send",
-      "/mails",
-      "/mails/retry/:id",
-      "/admin/queues",
-      "/api/metrics",
-      "/api/queue",
-      "/api/actions/run-sender",
-      "/api/actions/requeue-failed",
-      "/api/actions/run-producer",
-      "/api/audit"
-    ]
+    message: "Servicio operativo"
   });
 });
 
-app.post("/send", async (req, res) => {
+app.post("/send", authMiddleware, async (req, res) => {
   const { to, subject, body, senderProfile } = req.body;
 
   const result = await query(`
@@ -98,12 +182,12 @@ app.post("/send", async (req, res) => {
   res.send({ ok: true });
 });
 
-app.get("/mails", async (_req, res) => {
+app.get("/mails", authMiddleware, async (_req, res) => {
   const result = await query("SELECT * FROM MailQueue ORDER BY id DESC");
   res.send(result.recordset);
 });
 
-app.post("/mails/retry/:id", async (req, res) => {
+app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
   const id = Number(req.params.id);
   const result = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
   const mail = result.recordset[0];
@@ -116,7 +200,7 @@ app.post("/mails/retry/:id", async (req, res) => {
 // ------------------------
 // Endpoints Fullboard SQL-first (MVP)
 // ------------------------
-app.get("/api/metrics", async (_req, res) => {
+app.get("/api/metrics", authMiddleware, async (_req, res) => {
   try {
     const data = await sqlQuery("SELECT * FROM dbo.VW_MAILQUEUE_METRICS");
     res.json(data[0] || {});
@@ -125,7 +209,7 @@ app.get("/api/metrics", async (_req, res) => {
   }
 });
 
-app.get("/api/queue", async (req, res) => {
+app.get("/api/queue", authMiddleware, async (req, res) => {
   try {
     const status = req.query.status;
     const where = status ? "WHERE [status]=@status" : "";
@@ -140,7 +224,7 @@ app.get("/api/queue", async (req, res) => {
   }
 });
 
-app.post("/api/actions/run-sender", async (req, res) => {
+app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
   try {
     const { maxItems = 100, user = "web" } = req.body || {};
     await executeProcedure("dbo.SP_ADMIN_RUN_SENDER", [
@@ -153,7 +237,7 @@ app.post("/api/actions/run-sender", async (req, res) => {
   }
 });
 
-app.post("/api/actions/requeue-failed", async (req, res) => {
+app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
   try {
     const { user = "web" } = req.body || {};
     await executeProcedure("dbo.SP_ADMIN_REQUEUE_FAILED", [
@@ -165,7 +249,7 @@ app.post("/api/actions/requeue-failed", async (req, res) => {
   }
 });
 
-app.post("/api/actions/run-producer", async (req, res) => {
+app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
   try {
     const { procName, user = "web" } = req.body || {};
     await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
@@ -178,7 +262,7 @@ app.post("/api/actions/run-producer", async (req, res) => {
   }
 });
 
-app.get("/api/audit", async (_req, res) => {
+app.get("/api/audit", authMiddleware, async (_req, res) => {
   try {
     const data = await sqlQuery("SELECT TOP 100 * FROM dbo.MailAdminAudit ORDER BY Id DESC");
     res.json(data);

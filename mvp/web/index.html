@@ -4,49 +4,131 @@
   <meta charset="utf-8"/>
   <title>Mail Fullboard</title>
   <style>
-    body{font-family:Arial;margin:20px} .kpi{display:inline-block;margin-right:20px}
+    body{font-family:Arial;margin:20px}
+    .kpi{display:inline-block;margin-right:20px}
     button{margin-right:10px;margin-bottom:10px}
     table{border-collapse:collapse;width:100%} td,th{border:1px solid #ddd;padding:6px}
+    .hidden{display:none}
+    #loginBox{max-width:360px;border:1px solid #ddd;padding:16px;border-radius:8px}
+    input{width:100%;padding:8px;margin-top:4px;margin-bottom:10px}
+    #loginError{color:#c62828}
   </style>
 </head>
 <body>
-  <h2>Mail Fullboard</h2>
+  <div id="loginView" class="hidden">
+    <h2>Ingreso al panel</h2>
+    <div id="loginBox">
+      <label>Usuario</label>
+      <input id="username" type="text" value="admin"/>
+      <label>Clave</label>
+      <input id="password" type="password" value="admin123"/>
+      <button onclick="doLogin()">Ingresar</button>
+      <p id="loginError"></p>
+    </div>
+  </div>
 
-  <div class="kpi">Pendientes: <b id="pending">0</b></div>
-  <div class="kpi">Enviados: <b id="sent">0</b></div>
-  <div class="kpi">Fallidos: <b id="failed">0</b></div>
-  <div class="kpi">Total: <b id="total">0</b></div>
+  <div id="panelView" class="hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h2>Mail Fullboard</h2>
+      <div>
+        <span id="who" style="margin-right:8px"></span>
+        <button onclick="doLogout()">Cerrar sesión</button>
+      </div>
+    </div>
 
-  <hr/>
-  <button onclick="runSender()">Ejecutar Sender</button>
-  <button onclick="requeue()">Reencolar Failed</button>
-  <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
-  <button onclick="loadAll()">Refrescar</button>
+    <div class="kpi">Pendientes: <b id="pending">0</b></div>
+    <div class="kpi">Enviados: <b id="sent">0</b></div>
+    <div class="kpi">Fallidos: <b id="failed">0</b></div>
+    <div class="kpi">Total: <b id="total">0</b></div>
 
-  <h3>Cola</h3>
-  <table id="tbl"></table>
+    <hr/>
+    <button onclick="runSender()">Ejecutar Sender</button>
+    <button onclick="requeue()">Reencolar Failed</button>
+    <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
+    <button onclick="loadAll()">Refrescar</button>
+
+    <h3>Cola</h3>
+    <table id="tbl"></table>
+  </div>
 
 <script>
-const API="http://localhost:3000/api";
+const API="/api";
 
-async function j(url,opt){const r=await fetch(url,opt);return r.json();}
+async function j(url,opt){
+  const r=await fetch(url,{credentials:"include",...(opt||{})});
+  if(r.status===401){showLogin(); throw new Error("No autorizado");}
+  return r.json();
+}
+
+function showLogin(){
+  loginView.classList.remove("hidden");
+  panelView.classList.add("hidden");
+}
+
+function showPanel(user){
+  who.textContent = user ? `Usuario: ${user}` : "";
+  panelView.classList.remove("hidden");
+  loginView.classList.add("hidden");
+}
+
+async function checkAuth(){
+  const st = await j("/auth/status");
+  if(st.loggedIn){
+    showPanel(st.user);
+    await loadAll();
+  }else{
+    showLogin();
+  }
+}
+
+async function doLogin(){
+  loginError.textContent="";
+  const username = document.getElementById("username").value;
+  const password = document.getElementById("password").value;
+
+  const r = await fetch("/auth/login",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    credentials:"include",
+    body:JSON.stringify({username,password})
+  });
+
+  if(!r.ok){
+    loginError.textContent="Usuario o clave incorrectos";
+    return;
+  }
+
+  await checkAuth();
+}
+
+async function doLogout(){
+  await j("/auth/logout", {method:"POST"});
+  showLogin();
+}
 
 async function loadMetrics(){
   const m=await j(`${API}/metrics`);
   pending.textContent=m.pending||0; sent.textContent=m.sent||0;
   failed.textContent=m.failed||0; total.textContent=m.total||0;
 }
+
 async function loadQueue(){
   const data=await j(`${API}/queue`);
   const t=document.getElementById("tbl");
   t.innerHTML="<tr><th>ID</th><th>Email</th><th>Asunto</th><th>Estado</th><th>Retries</th><th>Error</th><th>Perfil</th><th>Creado</th><th>Intento</th></tr>"
     + data.map(x=>`<tr><td>${x.id}</td><td>${x.to_email}</td><td>${x.subject||''}</td><td>${x.status}</td><td>${x.retries}</td><td>${x.error_message||''}</td><td>${x.MailProfile||''}</td><td>${x.created_at||''}</td><td>${x.last_attempt||''}</td></tr>`).join("");
 }
+
 async function runSender(){ await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})}); loadAll();}
 async function requeue(){ await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel"})}); loadAll();}
 async function runProducer(procName){ await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel"})}); loadAll();}
 async function loadAll(){ await loadMetrics(); await loadQueue(); }
-loadAll(); setInterval(loadAll, 8000);
+
+checkAuth();
+setInterval(async () => {
+  const st = await j("/auth/status");
+  if (st.loggedIn) await loadAll();
+}, 8000);
 </script>
 </body>
 </html>
