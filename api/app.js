@@ -6,7 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { mailQueue } from "../queue/mailQueue.js";
-import { query } from "../services/db.js";
+import { executeProcedure, getDbTargetsSummary, query, sqlQuery } from "../services/db.js";
 
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
@@ -87,37 +87,8 @@ function authMiddleware(req, res, next) {
 }
 
 // ------------------------
-// SQL config + helpers
+// SQL helpers
 // ------------------------
-const sqlConfig = {
-  user: process.env.DB_USER || process.env.SQL_USER,
-  password: process.env.DB_PASS || process.env.SQL_PASSWORD,
-  server: process.env.DB_SERVER || process.env.SQL_SERVER,
-  database: process.env.DB_NAME || process.env.SQL_DATABASE,
-  options: {
-    encrypt: false,
-    trustServerCertificate: true
-  }
-};
-
-async function sqlQuery(text, inputs = []) {
-  const pool = await sql.connect(sqlConfig);
-  const request = pool.request();
-  for (const input of inputs) {
-    request.input(input.name, input.type, input.value);
-  }
-  const result = await request.query(text);
-  return result.recordset;
-}
-
-async function executeProcedure(name, inputs = []) {
-  const pool = await sql.connect(sqlConfig);
-  const request = pool.request();
-  for (const input of inputs) {
-    request.input(input.name, input.type, input.value);
-  }
-  await request.execute(name);
-}
 
 function escapeSqlString(value) {
   return String(value).replace(/'/g, "''");
@@ -140,6 +111,16 @@ const AVAILABLE_PRODUCERS = [
     description: "Prueba actual: genera correos de informe para pacientes."
   }
 ];
+
+const REMOTE_DB_TARGETS = new Set(["prod", "test"]);
+
+function resolveRemoteTarget(rawTarget) {
+  const normalized = String(rawTarget || "prod").toLowerCase();
+  if (!REMOTE_DB_TARGETS.has(normalized)) {
+    throw new Error(`Target inválido: ${rawTarget}. Usá 'prod' o 'test'.`);
+  }
+  return normalized;
+}
 
 const MAILDB_TABLES = [
   "spt_fallback_db",
@@ -202,6 +183,7 @@ async function resolveMailQueueColumns() {
     status: statusColumn ? statusColumn : "CAST(NULL AS NVARCHAR(20))",
     statusMaxLength: statusRow ? Number(statusRow.CHARACTER_MAXIMUM_LENGTH || 0) : null,
     retries: retriesColumn ? retriesColumn : "CAST(0 AS INT)",
+    maxRetries: pick(["max_retries", "maxRetries", "tope_reintentos"]),
     errorMessage: pick(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
     createdAt: pick(["created_at", "createdon", "created_date", "fecha_creacion", "created"]),
     lastAttempt: pick(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"]),
@@ -549,6 +531,7 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
          ${normalizeStatusExpression(queueColumns.status)} AS [status],
          ${queueColumns.status} AS [status_raw],
          ${queueColumns.retries} AS retries,
+         ${queueColumns.maxRetries} AS max_retries,
          ${queueColumns.errorMessage} AS error_message,
          ${errorCategorySql} AS error_category,
          CASE WHEN ${errorCategorySql} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable,
@@ -578,11 +561,55 @@ app.get("/api/queue/columns", authMiddleware, async (_req, res) => {
         subject: queueColumns.subject,
         status: queueColumns.status,
         retries: queueColumns.retries,
+        max_retries: queueColumns.maxRetries,
         error_message: queueColumns.errorMessage,
         created_at: queueColumns.createdAt,
         last_attempt: queueColumns.lastAttempt,
         profile: mailProfileExpression
       }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/db/context", authMiddleware, (_req, res) => {
+  res.json({
+    ok: true,
+    dbTargets: getDbTargetsSummary(),
+    note: "La cola, mapeo y monitoreo salen de MailDB local (SQL Express)."
+  });
+});
+
+app.get("/api/db/table-usage", authMiddleware, async (_req, res) => {
+  try {
+    const rows = await sqlQuery(`
+      SELECT TABLE_NAME
+      FROM INFORMATION_SCHEMA.TABLES
+      WHERE TABLE_SCHEMA='dbo'
+      ORDER BY TABLE_NAME
+    `);
+
+    const usedByPanel = new Set(["MailQueue", "MailAdminAudit"]);
+    const tableUsage = rows.map(row => {
+      const tableName = String(row.TABLE_NAME);
+      return {
+        tableName,
+        usedByPanel: usedByPanel.has(tableName),
+        role:
+          tableName === "MailQueue"
+            ? "COLA_PRINCIPAL"
+            : tableName === "MailAdminAudit"
+              ? "AUDITORIA"
+              : "NO_REFERENCIADA_POR_API"
+      };
+    });
+
+    res.json({
+      ok: true,
+      queueSourceTable: "dbo.MailQueue",
+      totalTables: tableUsage.length,
+      tableUsage
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -644,12 +671,13 @@ app.get("/api/actions/producers", authMiddleware, (_req, res) => {
 
 app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
   try {
-    const { maxItems = 100, user = "web" } = req.body || {};
+    const { maxItems = 100, user = "web", target = "prod" } = req.body || {};
+    const remoteTarget = resolveRemoteTarget(target);
     await executeProcedure("dbo.SP_ADMIN_RUN_SENDER", [
       { name: "MaxItems", type: sql.Int, value: maxItems },
       { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
-    ]);
-    res.json({ ok: true });
+    ], remoteTarget);
+    res.json({ ok: true, target: remoteTarget });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -705,7 +733,8 @@ app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
 
 app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
   try {
-    const { procName, user = "web" } = req.body || {};
+    const { procName, user = "web", target = "prod" } = req.body || {};
+    const remoteTarget = resolveRemoteTarget(target);
     if (!procName) {
       return res.status(400).json({ error: "Debes indicar procName." });
     }
@@ -718,8 +747,8 @@ app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
     await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
       { name: "ProcName", type: sql.NVarChar(128), value: procName },
       { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
-    ]);
-    res.json({ ok: true });
+    ], remoteTarget);
+    res.json({ ok: true, target: remoteTarget });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -79,6 +79,12 @@ export default function MailTable({ status }) {
     load();
   }, [status, errorCategory]);
 
+  function formatRetries(mail) {
+    const retries = Number.isFinite(Number(mail?.retries)) ? Number(mail.retries) : 0;
+    const maxRetries = Number.isFinite(Number(mail?.max_retries)) ? Number(mail.max_retries) : null;
+    return maxRetries === null ? `${retries}` : `${retries}/${maxRetries}`;
+  }
+
   return (
     <div>
       <h2>{status || "Todos"} mails</h2>
@@ -139,7 +145,7 @@ export default function MailTable({ status }) {
               <td>{m.subject}</td>
               <td>{m.status}</td>
               <td>{m.error_message}</td>
-              <td>{m.retries}/{m.max_retries}</td>
+              <td>{formatRetries(m)}</td>
               <td>
                 {m.status === "Failed" && (
                   <button onClick={() => handleRetry(m.id)} disabled={busy}>
