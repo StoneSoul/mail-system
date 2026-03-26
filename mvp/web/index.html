@@ -51,8 +51,10 @@
     #loginBox{max-width:360px;border:1px solid var(--border);padding:20px;border-radius:12px;background:#fff}
     #loginError{color:#c62828}
     #feedback{padding:0 20px 14px;color:var(--muted)}
-    .sp-inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+    .sp-inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .sp-inline .field{min-width:280px;flex:1}
+    .sp-row{display:flex;gap:8px;align-items:center}
+    .sp-row button{white-space:nowrap}
     .info-box{margin:0 20px 16px;padding:12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc}
     .small{font-size:12px;color:var(--muted);margin:2px 0}
   </style>
@@ -104,16 +106,22 @@
         <div class="sp-inline">
           <div class="field">
             <label>Ejecutar SP</label>
-            <select id="producerSelect" onchange="renderProducerDescription()">
-              <option value="">Seleccioná un SP</option>
-            </select>
+            <div class="sp-row">
+              <select id="producerSelect" onchange="renderProducerDescription()">
+                <option value="">Seleccioná un SP</option>
+              </select>
+              <button onclick="runSelectedProducer()">Ejecutar SP</button>
+            </div>
             <p id="producerHelp" class="small">Sin selección.</p>
           </div>
-          <button onclick="runSelectedProducer()">Ejecutar SP</button>
         </div>
       </div>
 
       <div class="controls">
+        <div class="field">
+          <label>Búsqueda dinámica</label>
+          <input id="searchFilter" type="text" placeholder="Buscar por mail, asunto, motivo, estado..." oninput="loadQueue()"/>
+        </div>
         <div class="field">
           <label>Estado</label>
           <select id="statusFilter" onchange="loadQueue()">
@@ -157,6 +165,8 @@
 
 <script>
 const API="/api";
+let queueSearchTimer = null;
+let queueDataCache = [];
 
 async function j(url,opt){
   const r=await fetch(url,{credentials:"include",...(opt||{})});
@@ -234,8 +244,14 @@ async function loadMetrics(){
 }
 
 async function loadQueue(){
+  if (queueSearchTimer) clearTimeout(queueSearchTimer);
+  queueSearchTimer = setTimeout(loadQueueNow, 150);
+}
+
+async function loadQueueNow(){
   const status = document.getElementById("statusFilter")?.value || "";
   const errorCategory = document.getElementById("errorFilter")?.value || "";
+  const searchText = (document.getElementById("searchFilter")?.value || "").trim().toLowerCase();
   const qs = new URLSearchParams();
   if (status) qs.set("status", status);
   if (errorCategory) qs.set("errorCategory", errorCategory);
@@ -245,15 +261,31 @@ let data = [];
   try {
     const response = await j(`${API}/queue?${qs.toString()}`);
     data = Array.isArray(response) ? response : [];
+    queueDataCache = data;
   } catch (err) {
     queueError = `No se pudo cargar la cola: ${err.message}`;
+    data = queueDataCache;
   }
 
   const retryRule = document.getElementById("retryRule")?.value || "";
-  const filtered = data.filter(x => {
+  const filteredByRule = data.filter(x => {
     if (retryRule === "retryable") return Number(x.is_retryable) === 1;
     if (retryRule === "noretry") return Number(x.is_retryable) === 0;
     return true;
+  });
+  const filtered = filteredByRule.filter(x => {
+    if (!searchText) return true;
+    const haystack = [
+      x.to_email,
+      x.subject,
+      x.error_category,
+      x.status,
+      x.error_message,
+      x.MailProfile
+    ]
+      .map(v => String(v || "").toLowerCase())
+      .join(" ");
+    return haystack.includes(searchText);
   });
 
   const t=document.getElementById("tbl");
@@ -272,7 +304,7 @@ let data = [];
       <td>${x.created_at||''}</td>
       <td>${x.last_attempt||''}</td>
     </tr>`).join("") + "</tbody>";
-  feedback.textContent = queueError || `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}.`;
+  feedback.textContent = queueError || `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}${searchText ? ` y búsqueda "${searchText}"` : ""}.`;
 }
 
 let producersCatalog = [];
@@ -395,10 +427,18 @@ function fmtCount(value){
 
 async function loadDbInsights(){
   await runAction("diagnóstico de tablas", async () => {
-    const [tableData, columnData] = await Promise.all([
-      j(`${API}/db/tables`),
-      j(`${API}/queue/columns`)
+    const tableData = await tryGet([
+      `${API}/db/tables`,
+      "/db/tables"
     ]);
+    const columnData = await tryGet([
+      `${API}/queue/columns`,
+      "/queue/columns"
+    ]);
+
+    if (!tableData || !columnData) {
+      throw new Error("No se encontró el endpoint de diagnóstico (/api/db/tables o /api/queue/columns).");
+    }
     const lines = [];
     lines.push(`<strong>Tabla principal de envíos:</strong> ${tableData.queueSourceTable}`);
     lines.push(`<div class='small'>El panel lee la cola desde una única tabla lógica. Si ves varios objetos, el resto son tablas de sistema o auditoría.</div>`);
@@ -420,11 +460,27 @@ async function loadDbInsights(){
     feedback.textContent = "Diagnóstico de MailDB actualizado.";
   });
 }
+
+async function tryGet(urls){
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      return await j(url);
+    } catch (err) {
+      lastError = err;
+      if (!String(err.message || "").includes("404")) {
+        throw err;
+      }
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
 async function loadAll(){
   await runAction("refresh", async () => {
     await loadProducers();
     await loadMetrics();
-    await loadQueue();
+    await loadQueueNow();
   });
 }
 
