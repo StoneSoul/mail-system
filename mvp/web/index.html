@@ -4,18 +4,57 @@
   <meta charset="utf-8"/>
   <title>Mail Fullboard</title>
   <style>
-    body{font-family:Arial;margin:20px}
-    .kpi{display:inline-block;margin-right:20px}
-    button{margin-right:10px;margin-bottom:10px}
-    table{border-collapse:collapse;width:100%} td,th{border:1px solid #ddd;padding:6px}
+    :root{
+      --bg:#f5f7fb;
+      --card:#ffffff;
+      --border:#dde3ef;
+      --text:#1f2937;
+      --muted:#6b7280;
+      --primary:#2563eb;
+      --primary-soft:#dbeafe;
+      --danger:#dc2626;
+      --danger-soft:#fee2e2;
+      --ok:#059669;
+      --shadow:0 10px 28px rgba(15,23,42,.08);
+    }
+    *{box-sizing:border-box}
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:var(--bg);color:var(--text)}
+    .shell{max-width:1280px;margin:24px auto;padding:0 16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow)}
+    .header{display:flex;justify-content:space-between;align-items:center;padding:18px 20px}
+    .title{margin:0;font-size:28px}
+    .sub{margin:2px 0 0;color:var(--muted)}
+    .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:0 20px 20px}
+    .kpi{background:#f8fafc;border:1px solid var(--border);border-radius:12px;padding:12px}
+    .kpi-label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+    .kpi-value{margin-top:6px;font-size:24px;font-weight:700}
+    .toolbar{display:flex;flex-wrap:wrap;gap:10px;padding:16px 20px;border-top:1px solid var(--border)}
+    button{border:1px solid var(--border);background:#fff;color:var(--text);padding:9px 12px;border-radius:10px;font-weight:600;cursor:pointer}
+    button.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+    button.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+    button:hover{filter:brightness(.98)}
+    .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;padding:0 20px 16px}
+    .field{display:flex;flex-direction:column;gap:6px}
+    label{font-size:12px;color:var(--muted);font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+    select,input{width:100%;padding:9px;border:1px solid var(--border);border-radius:10px;background:#fff}
+    table{border-collapse:separate;border-spacing:0;width:100%}
+    thead th{position:sticky;top:0;background:#f8fafc;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+    td,th{border-bottom:1px solid var(--border);padding:10px;text-align:left;vertical-align:top}
+    .table-wrap{max-height:55vh;overflow:auto;border-top:1px solid var(--border)}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700}
+    .badge-ok{background:#dcfce7;color:#166534}
+    .badge-pending{background:#fef9c3;color:#854d0e}
+    .badge-failed{background:var(--danger-soft);color:#991b1b}
+    .badge-retry{background:var(--primary-soft);color:#1d4ed8}
+    .badge-noretry{background:#f3f4f6;color:#374151}
     .hidden{display:none}
-    #loginBox{max-width:360px;border:1px solid #ddd;padding:16px;border-radius:8px}
-    input{width:100%;padding:8px;margin-top:4px;margin-bottom:10px}
+    #loginBox{max-width:360px;border:1px solid var(--border);padding:20px;border-radius:12px;background:#fff}
     #loginError{color:#c62828}
+    #feedback{padding:0 20px 14px;color:var(--muted)}
   </style>
 </head>
 <body>
-  <div id="loginView" class="hidden">
+  <div id="loginView" class="shell hidden">
     <h2>Ingreso al panel</h2>
     <div id="loginBox">
       <label>Usuario</label>
@@ -27,28 +66,73 @@
     </div>
   </div>
 
-  <div id="panelView" class="hidden">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h2>Mail Fullboard</h2>
-      <div>
-        <span id="who" style="margin-right:8px"></span>
-        <button onclick="doLogout()">Cerrar sesión</button>
+  <div id="panelView" class="shell hidden">
+    <div class="card">
+      <div class="header">
+        <div>
+          <h2 class="title">Mail Fullboard</h2>
+          <p class="sub">Panel operativo con filtros inteligentes de errores.</p>
+        </div>
+        <div>
+          <span id="who" style="margin-right:8px"></span>
+          <button onclick="doLogout()">Cerrar sesión</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="kpi-label">Pendientes</div><div class="kpi-value" id="pending">0</div></div>
+        <div class="kpi"><div class="kpi-label">Enviados</div><div class="kpi-value" id="sent">0</div></div>
+        <div class="kpi"><div class="kpi-label">Fallidos</div><div class="kpi-value" id="failed">0</div></div>
+        <div class="kpi"><div class="kpi-label">Total</div><div class="kpi-value" id="total">0</div></div>
+      </div>
+
+      <div class="toolbar">
+        <button class="primary" onclick="runSender()">Ejecutar Sender</button>
+        <button onclick="requeueRetryable()">Reencolar recuperables</button>
+        <button class="danger" onclick="requeueAll()">Reencolar TODO Failed</button>
+        <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
+        <button onclick="loadAll()">Refrescar</button>
+      </div>
+
+      <div class="controls">
+        <div class="field">
+          <label>Estado</label>
+          <select id="statusFilter" onchange="loadQueue()">
+            <option value="">Todos</option>
+            <option value="Waiting">Waiting</option>
+            <option value="Processing">Processing</option>
+            <option value="Failed">Failed</option>
+            <option value="Sent">Sent</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Motivo de error</label>
+          <select id="errorFilter" onchange="loadQueue()">
+            <option value="">Todos</option>
+            <option value="MAILBOX_NOT_FOUND">MAILBOX_NOT_FOUND</option>
+            <option value="MAILBOX_FULL">MAILBOX_FULL</option>
+            <option value="SENDING_LIMIT">SENDING_LIMIT</option>
+            <option value="TEMPORARY">TEMPORARY</option>
+            <option value="OTHER">OTHER</option>
+            <option value="UNKNOWN">UNKNOWN</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Regla de reintento</label>
+          <select id="retryRule" onchange="loadQueue()">
+            <option value="">Todos</option>
+            <option value="retryable">Solo recuperables</option>
+            <option value="noretry">Solo no recuperables</option>
+          </select>
+        </div>
+      </div>
+
+      <p id="feedback"></p>
+
+      <div class="table-wrap">
+        <table id="tbl"></table>
       </div>
     </div>
-
-    <div class="kpi">Pendientes: <b id="pending">0</b></div>
-    <div class="kpi">Enviados: <b id="sent">0</b></div>
-    <div class="kpi">Fallidos: <b id="failed">0</b></div>
-    <div class="kpi">Total: <b id="total">0</b></div>
-
-    <hr/>
-    <button onclick="runSender()">Ejecutar Sender</button>
-    <button onclick="requeue()">Reencolar Failed</button>
-    <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
-    <button onclick="loadAll()">Refrescar</button>
-
-    <h3>Cola</h3>
-    <table id="tbl"></table>
   </div>
 
 <script>
@@ -113,16 +197,62 @@ async function loadMetrics(){
 }
 
 async function loadQueue(){
-  const data=await j(`${API}/queue`);
+  const status = document.getElementById("statusFilter")?.value || "";
+  const errorCategory = document.getElementById("errorFilter")?.value || "";
+  const qs = new URLSearchParams();
+  if (status) qs.set("status", status);
+  if (errorCategory) qs.set("errorCategory", errorCategory);
+
+  const data=await j(`${API}/queue?${qs.toString()}`);
+  const retryRule = document.getElementById("retryRule")?.value || "";
+  const filtered = data.filter(x => {
+    if (retryRule === "retryable") return Number(x.is_retryable) === 1;
+    if (retryRule === "noretry") return Number(x.is_retryable) === 0;
+    return true;
+  });
+
   const t=document.getElementById("tbl");
-  t.innerHTML="<tr><th>ID</th><th>Email</th><th>Asunto</th><th>Estado</th><th>Retries</th><th>Error</th><th>Perfil</th><th>Creado</th><th>Intento</th></tr>"
-    + data.map(x=>`<tr><td>${x.id}</td><td>${x.to_email}</td><td>${x.subject||''}</td><td>${x.status}</td><td>${x.retries}</td><td>${x.error_message||''}</td><td>${x.MailProfile||''}</td><td>${x.created_at||''}</td><td>${x.last_attempt||''}</td></tr>`).join("");
+  t.innerHTML="<thead><tr><th>ID</th><th>Email</th><th>Asunto</th><th>Estado</th><th>Motivo</th><th>Regla</th><th>Retries</th><th>Error</th><th>Perfil</th><th>Creado</th><th>Intento</th></tr></thead><tbody>"
+    + filtered.map(x=>`<tr>
+      <td>${x.id}</td>
+      <td>${x.to_email}</td>
+      <td>${x.subject||''}</td>
+      <td>${statusBadge(x.status)}</td>
+      <td>${x.error_category || 'UNKNOWN'}</td>
+      <td>${retryBadge(x.is_retryable)}</td>
+      <td>${x.retries}</td>
+      <td>${x.error_message||''}</td>
+      <td>${x.MailProfile||''}</td>
+      <td>${x.created_at||''}</td>
+      <td>${x.last_attempt||''}</td>
+    </tr>`).join("") + "</tbody>";
+  feedback.textContent = `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}.`;
 }
 
 async function runSender(){ await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})}); loadAll();}
-async function requeue(){ await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel"})}); loadAll();}
+async function requeueAll(){
+  await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel",skipCategories:[]})});
+  feedback.textContent = "Se reencolaron todos los Failed.";
+  loadAll();
+}
+async function requeueRetryable(){
+  await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel",skipCategories:["MAILBOX_FULL","MAILBOX_NOT_FOUND"]})});
+  feedback.textContent = "Se reencolaron solo errores recuperables (excluye MAILBOX_FULL y MAILBOX_NOT_FOUND).";
+  loadAll();
+}
 async function runProducer(procName){ await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel"})}); loadAll();}
 async function loadAll(){ await loadMetrics(); await loadQueue(); }
+
+function statusBadge(status){
+  if(status==="Sent") return `<span class="badge badge-ok">${status}</span>`;
+  if(status==="Failed") return `<span class="badge badge-failed">${status}</span>`;
+  return `<span class="badge badge-pending">${status}</span>`;
+}
+
+function retryBadge(isRetryable){
+  if(Number(isRetryable)===1) return '<span class="badge badge-retry">Reintentar</span>';
+  return '<span class="badge badge-noretry">No reintentar</span>';
+}
 
 checkAuth();
 setInterval(async () => {
