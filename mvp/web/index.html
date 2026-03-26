@@ -91,6 +91,8 @@
         <button onclick="requeueRetryable()">Reencolar recuperables</button>
         <button class="danger" onclick="requeueAll()">Reencolar TODO Failed</button>
         <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
+        <button class="danger" onclick="deleteSelected()">Borrar seleccionados</button>
+        <button class="danger" onclick="deleteFiltered()">Borrar filtrados</button>
         <button onclick="loadAll()">Refrescar</button>
       </div>
 
@@ -220,7 +222,7 @@ async function loadQueue(){
   if (status) qs.set("status", status);
   if (errorCategory) qs.set("errorCategory", errorCategory);
 
-  let data = [];
+let data = [];
   let queueError = "";
   try {
     const response = await j(`${API}/queue?${qs.toString()}`);
@@ -237,8 +239,9 @@ async function loadQueue(){
   });
 
   const t=document.getElementById("tbl");
-  t.innerHTML="<thead><tr><th>ID</th><th>Email</th><th>Asunto</th><th>Estado</th><th>Motivo</th><th>Regla</th><th>Retries</th><th>Error</th><th>Perfil</th><th>Creado</th><th>Intento</th></tr></thead><tbody>"
+  t.innerHTML="<thead><tr><th><input type='checkbox' id='selectAllRows' onchange='toggleSelectAll()'></th><th>ID</th><th>Email</th><th>Asunto</th><th>Estado</th><th>Motivo</th><th>Regla</th><th>Retries</th><th>Error</th><th>Perfil</th><th>Creado</th><th>Intento</th></tr></thead><tbody>"
     + filtered.map(x=>`<tr>
+      <td><input type="checkbox" class="rowSelector" value="${x.id}"></td>
       <td>${x.id}</td>
       <td>${x.to_email}</td>
       <td>${x.subject||''}</td>
@@ -254,19 +257,87 @@ async function loadQueue(){
   feedback.textContent = queueError || `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}.`;
 }
 
-async function runSender(){ await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})}); loadAll();}
+async function runSender(){
+  await runAction("sender", async () => {
+    await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})});
+    await loadAll();
+  });
+}
+
+async function runAction(actionName, action){
+  try{
+    await action();
+  }catch(err){
+    feedback.textContent = `Error en ${actionName}: ${err.message}`;
+  }
+}
+
+function selectedIds(){
+  return Array.from(document.querySelectorAll(".rowSelector:checked"))
+    .map(x => Number(x.value))
+    .filter(Number.isInteger);
+}
+
+function toggleSelectAll(){
+  const checked = document.getElementById("selectAllRows")?.checked;
+  document.querySelectorAll(".rowSelector").forEach(chk => {
+    chk.checked = Boolean(checked);
+  });
+}
+
+async function deleteSelected(){
+  await runAction("borrado de seleccionados", async () => {
+    const ids = selectedIds();
+    if(ids.length===0){
+      feedback.textContent = "No hay filas seleccionadas para borrar.";
+      return;
+    }
+    await j(`${API}/queue/delete`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});
+    feedback.textContent = `Se borraron ${ids.length} mails seleccionados.`;
+    await loadAll();
+  });
+}
+
+async function deleteFiltered(){
+  await runAction("borrado por filtro", async () => {
+    const status = document.getElementById("statusFilter")?.value || "";
+    const errorCategory = document.getElementById("errorFilter")?.value || "";
+    if(!status && !errorCategory){
+      feedback.textContent = "Para borrar filtrados, elegí al menos Estado o Motivo de error.";
+      return;
+    }
+    await j(`${API}/queue/delete`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({status,errorCategory})});
+    feedback.textContent = "Se borraron registros según el filtro actual.";
+    await loadAll();
+  });
+}
+
 async function requeueAll(){
-  await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel",skipCategories:[]})});
-  feedback.textContent = "Se reencolaron todos los Failed.";
-  loadAll();
+  await runAction("reencolado total", async () => {
+    await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel",skipCategories:[]})});
+    feedback.textContent = "Se reencolaron todos los Failed.";
+    await loadAll();
+  });
 }
 async function requeueRetryable(){
-  await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel",skipCategories:["MAILBOX_FULL","MAILBOX_NOT_FOUND"]})});
-  feedback.textContent = "Se reencolaron solo errores recuperables (excluye MAILBOX_FULL y MAILBOX_NOT_FOUND).";
-  loadAll();
+  await runAction("reencolado de recuperables", async () => {
+    await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel",skipCategories:["MAILBOX_FULL","MAILBOX_NOT_FOUND"]})});
+    feedback.textContent = "Se reencolaron solo errores recuperables (excluye MAILBOX_FULL y MAILBOX_NOT_FOUND).";
+    await loadAll();
+  });
 }
-async function runProducer(procName){ await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel"})}); loadAll();}
-async function loadAll(){ await loadMetrics(); await loadQueue(); }
+async function runProducer(procName){
+  await runAction(`ejecución de ${procName}`, async () => {
+    await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel"})});
+    await loadAll();
+  });
+}
+async function loadAll(){
+  await runAction("refresh", async () => {
+    await loadMetrics();
+    await loadQueue();
+  });
+}
 
 function statusBadge(status){
   if(status==="Sent") return `<span class="badge badge-ok">${status}</span>`;
