@@ -21,14 +21,21 @@ export async function getAuthStatus() {
   return res.data;
 }
 
-export async function getMails(status) {
-  const res = await apiClient.get("/mails");
-  if (status) return res.data.filter(m => m.status === status);
+export async function getMails(status, errorCategory) {
+  const params = {};
+  if (status) params.status = status;
+  if (errorCategory) params.errorCategory = errorCategory;
+
+  const res = await apiClient.get("/api/queue", { params });
   return res.data;
 }
 
 export async function retryMail(id) {
   return apiClient.post(`/mails/retry/${id}`);
+}
+
+export async function deleteQueueItems({ ids, status, errorCategory }) {
+  return apiClient.post("/api/queue/delete", { ids, status, errorCategory });
 }
 
 export async function getStats() {
