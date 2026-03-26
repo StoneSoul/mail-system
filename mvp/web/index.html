@@ -105,6 +105,13 @@
       <div class="controls" style="padding-top:0">
         <div class="sp-inline">
           <div class="field">
+            <label>Ambiente remoto</label>
+            <select id="remoteTarget" onchange="loadProducers()">
+              <option value="prod">Producción (PROD_DB_*)</option>
+              <option value="test">Prueba (TEST_DB_*)</option>
+            </select>
+          </div>
+          <div class="field">
             <label>Ejecutar SP</label>
             <div class="sp-row">
               <select id="producerSelect" onchange="renderProducerDescription()">
@@ -314,6 +321,10 @@ let data = [];
 
 let producersCatalog = [];
 
+function getRemoteTarget(){
+  return document.getElementById("remoteTarget")?.value || "prod";
+}
+
 function renderProducerDescription(){
   const selected = document.getElementById("producerSelect")?.value || "";
   const producer = producersCatalog.find(p => p.procName === selected);
@@ -324,7 +335,8 @@ function renderProducerDescription(){
 
 async function loadProducers(){
   try{
-    const data = await j(`${API}/actions/producers`);
+    const target = getRemoteTarget();
+    const data = await j(`${API}/actions/producers?target=${encodeURIComponent(target)}`);
     producersCatalog = Array.isArray(data.producers) ? data.producers : [];
     const select = document.getElementById("producerSelect");
     const current = select.value;
@@ -351,7 +363,7 @@ async function runSelectedProducer(){
 
 async function runSender(){
   await runAction("sender", async () => {
-    await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})});
+    await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel",target:getRemoteTarget()})});
     await loadAll();
   });
 }
@@ -420,7 +432,7 @@ async function requeueRetryable(){
 }
 async function runProducer(procName){
   await runAction(`ejecución de ${procName}`, async () => {
-    await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel"})});
+    await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel",target:getRemoteTarget()})});
     await loadAll();
   });
 }
