@@ -144,7 +144,7 @@ async function resolveMailQueueColumns() {
   if (cachedMailQueueColumns) return cachedMailQueueColumns;
 
   const rows = await sqlQuery(`
-    SELECT COLUMN_NAME
+    SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
     FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = 'dbo'
       AND TABLE_NAME = 'MailQueue'
@@ -173,6 +173,7 @@ async function resolveMailQueueColumns() {
     return null;
   }
 
+  const statusRow = rows.find(row => ["status", "estado"].includes(String(row.COLUMN_NAME).toLowerCase()));
   const statusColumn = pickForUpdate(["status", "estado"]);
   const retriesColumn = pickForUpdate(["retries", "retry_count", "reintentos"]);
 
@@ -180,6 +181,7 @@ async function resolveMailQueueColumns() {
     toEmail: pick(["to_email", "to", "recipient", "email", "destinatario", "correo"]),
     subject: pick(["subject", "asunto", "title", "titulo"]),
     status: statusColumn ? statusColumn : "CAST(NULL AS NVARCHAR(20))",
+    statusMaxLength: statusRow ? Number(statusRow.CHARACTER_MAXIMUM_LENGTH || 0) : null,
     retries: retriesColumn ? retriesColumn : "CAST(0 AS INT)",
     errorMessage: pick(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
     createdAt: pick(["created_at", "createdon", "created_date", "fecha_creacion", "created"]),
@@ -192,6 +194,59 @@ async function resolveMailQueueColumns() {
   };
 
   return cachedMailQueueColumns;
+}
+
+function isSingleCharStatus(columns) {
+  return Number(columns?.statusMaxLength) === 1;
+}
+
+function statusTokens(columns, semanticStatus) {
+  const normalized = String(semanticStatus || "").toLowerCase();
+  const singleChar = isSingleCharStatus(columns);
+
+  if (normalized === "failed") return singleChar ? ["X", "F"] : ["Failed"];
+  if (normalized === "sent") return singleChar ? ["E", "S"] : ["Sent"];
+  if (normalized === "processing") return singleChar ? ["R"] : ["Processing"];
+  if (normalized === "pending" || normalized === "waiting") {
+    return singleChar ? ["P"] : ["Waiting", "Pending"];
+  }
+
+  return [String(semanticStatus || "")];
+}
+
+function normalizeStatusExpression(statusExpression) {
+  return `
+  CASE
+    WHEN ${statusExpression} IS NULL THEN 'Unknown'
+    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('P','PENDING','WAITING') THEN 'Pending'
+    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('R','PROCESSING') THEN 'Processing'
+    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('S','SENT','E') THEN 'Sent'
+    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('X','F','FAILED') THEN 'Failed'
+    ELSE CAST(${statusExpression} AS NVARCHAR(20))
+  END
+`;
+}
+
+function buildStatusWhere(columns, status, paramPrefix = "status") {
+  if (!status || !columns?.statusForWhere) {
+    return { clause: "", inputs: [] };
+  }
+
+  const tokens = statusTokens(columns, status).filter(Boolean);
+  if (tokens.length === 0) {
+    return { clause: "", inputs: [] };
+  }
+
+  const inputs = tokens.map((token, index) => ({
+    name: `${paramPrefix}${index}`,
+    type: sql.NVarChar(20),
+    value: token
+  }));
+  const placeholders = inputs.map(input => `@${input.name}`).join(", ");
+  return {
+    clause: `${columns.statusForWhere} IN (${placeholders})`,
+    inputs
+  };
 }
 
 function buildErrorCategorySql(errorMessageExpression) {
@@ -341,7 +396,8 @@ app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "No se puede reintentar un mail ya enviado." });
     }
 
-    const setClauses = [`${queueColumns.statusForWhere} = N'Waiting'`];
+    const pendingToken = statusTokens(queueColumns, "Pending")[0] || "Waiting";
+    const setClauses = [`${queueColumns.statusForWhere} = @pendingStatus`];
     if (queueColumns.errorMessageForUpdate) setClauses.push(`${queueColumns.errorMessageForUpdate} = NULL`);
     if (queueColumns.errorTypeForUpdate) setClauses.push(`${queueColumns.errorTypeForUpdate} = NULL`);
     if (queueColumns.lastAttemptForUpdate) setClauses.push(`${queueColumns.lastAttemptForUpdate} = NULL`);
@@ -350,7 +406,10 @@ app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
       `UPDATE dbo.MailQueue
        SET ${setClauses.join(", ")}
        WHERE id = @id;`,
-      [{ name: "id", type: sql.Int, value: id }]
+      [
+        { name: "id", type: sql.Int, value: id },
+        { name: "pendingStatus", type: sql.NVarChar(20), value: pendingToken }
+      ]
     );
 
     const refreshed = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
@@ -383,8 +442,11 @@ app.post("/api/queue/delete", authMiddleware, async (req, res) => {
       whereClauses.push(`id IN (${validIds.join(",")})`);
     } else {
       if (status && queueColumns.statusForWhere) {
-        whereClauses.push(`${queueColumns.statusForWhere}=@status`);
-        inputs.push({ name: "status", type: sql.NVarChar(20), value: status });
+        const statusWhere = buildStatusWhere(queueColumns, status, "deleteStatus");
+        if (statusWhere.clause) {
+          whereClauses.push(statusWhere.clause);
+          inputs.push(...statusWhere.inputs);
+        }
       }
 
       if (errorCategory && ALLOWED_ERROR_CATEGORIES.includes(errorCategory)) {
@@ -446,8 +508,11 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
     const whereClauses = [];
 
     if (status && queueColumns.statusForWhere) {
-      whereClauses.push(`${queueColumns.statusForWhere}=@status`);
-      inputs.push({ name: "status", type: sql.NVarChar(20), value: status });
+      const statusWhere = buildStatusWhere(queueColumns, status);
+      if (statusWhere.clause) {
+        whereClauses.push(statusWhere.clause);
+        inputs.push(...statusWhere.inputs);
+      }
     }
     if (errorCategory && ALLOWED_ERROR_CATEGORIES.includes(errorCategory)) {
       whereClauses.push(`${errorCategorySql}=@errorCategory`);
@@ -462,7 +527,8 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
          id,
          ${queueColumns.toEmail} AS to_email,
          ${queueColumns.subject} AS [subject],
-         ${queueColumns.status} AS [status],
+         ${normalizeStatusExpression(queueColumns.status)} AS [status],
+         ${queueColumns.status} AS [status_raw],
          ${queueColumns.retries} AS retries,
          ${queueColumns.errorMessage} AS error_message,
          ${errorCategorySql} AS error_category,
@@ -506,9 +572,12 @@ app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
     const notInClause = normalized.length
       ? `AND ${errorCategorySql} NOT IN (${normalized.map(x => `'${x}'`).join(",")})`
       : "";
+    const failedTokens = statusTokens(queueColumns, "Failed");
+    const pendingToken = statusTokens(queueColumns, "Pending")[0] || "Waiting";
+    const failedInClause = failedTokens.map(token => `'${escapeSqlString(token)}'`).join(",");
 
     const setClauses = [];
-    if (queueColumns.statusForWhere) setClauses.push(`${queueColumns.statusForWhere} = N'Waiting'`);
+    if (queueColumns.statusForWhere) setClauses.push(`${queueColumns.statusForWhere} = N'${escapeSqlString(pendingToken)}'`);
     if (queueColumns.retriesForUpdate) setClauses.push(`${queueColumns.retriesForUpdate} = 0`);
     if (queueColumns.errorMessageForUpdate) setClauses.push(`${queueColumns.errorMessageForUpdate} = NULL`);
     if (queueColumns.errorTypeForUpdate) setClauses.push(`${queueColumns.errorTypeForUpdate} = NULL`);
@@ -521,7 +590,7 @@ app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
     const sqlText = `
       UPDATE dbo.MailQueue
       SET ${setClauses.join(",\n          ")}
-      WHERE ${queueColumns.statusForWhere} = N'Failed' ${notInClause};
+      WHERE ${queueColumns.statusForWhere} IN (${failedInClause}) ${notInClause};
     `;
 
     await sqlQuery(sqlText);
