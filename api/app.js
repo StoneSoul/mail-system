@@ -133,6 +133,25 @@ const ALLOWED_ERROR_CATEGORIES = [
   "UNKNOWN"
 ];
 
+const AVAILABLE_PRODUCERS = [
+  {
+    procName: "SP_ENVIO_INFORMEPACIENTE_1",
+    label: "Informe Paciente",
+    description: "Prueba actual: genera correos de informe para pacientes."
+  }
+];
+
+const MAILDB_TABLES = [
+  "spt_fallback_db",
+  "spt_fallback_dev",
+  "spt_fallback_usg",
+  "IMCcorreos",
+  "MailQueue",
+  "MailAdminAudit",
+  "spt_monitor",
+  "MSreplication_options"
+];
+
 let cachedMailProfileExpression = null;
 let cachedMailQueueColumns = null;
 
@@ -547,6 +566,82 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
   }
 });
 
+app.get("/api/queue/columns", authMiddleware, async (_req, res) => {
+  try {
+    const queueColumns = await resolveMailQueueColumns();
+    const mailProfileExpression = await resolveMailProfileExpression();
+    res.json({
+      ok: true,
+      sourceTable: "dbo.MailQueue",
+      mapping: {
+        to_email: queueColumns.toEmail,
+        subject: queueColumns.subject,
+        status: queueColumns.status,
+        retries: queueColumns.retries,
+        error_message: queueColumns.errorMessage,
+        created_at: queueColumns.createdAt,
+        last_attempt: queueColumns.lastAttempt,
+        profile: mailProfileExpression
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/db/tables", authMiddleware, async (_req, res) => {
+  try {
+    const rows = await sqlQuery(
+      `SELECT TABLE_NAME
+       FROM INFORMATION_SCHEMA.TABLES
+       WHERE TABLE_SCHEMA='dbo'
+         AND TABLE_NAME IN (${MAILDB_TABLES.map((_, index) => `@table${index}`).join(",")})`,
+      MAILDB_TABLES.map((table, index) => ({
+        name: `table${index}`,
+        type: sql.NVarChar(256),
+        value: table
+      }))
+    );
+
+    const existing = new Set(rows.map(row => String(row.TABLE_NAME).toLowerCase()));
+    const tableStats = [];
+
+    for (const tableName of MAILDB_TABLES) {
+      const exists = existing.has(tableName.toLowerCase());
+      let rowCount = null;
+      if (exists) {
+        const countRows = await sqlQuery(`SELECT COUNT(1) AS total FROM dbo.${asSqlIdentifier(tableName)}`);
+        rowCount = Number(countRows[0]?.total || 0);
+      }
+
+      tableStats.push({
+        tableName,
+        exists,
+        rowCount,
+        role:
+          tableName === "MailQueue"
+            ? "COLA_PRINCIPAL"
+            : tableName === "MailAdminAudit"
+              ? "AUDITORIA"
+              : "SISTEMA"
+      });
+    }
+
+    res.json({
+      ok: true,
+      queueSourceTable: "dbo.MailQueue",
+      producers: AVAILABLE_PRODUCERS,
+      tables: tableStats
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/actions/producers", authMiddleware, (_req, res) => {
+  res.json({ ok: true, producers: AVAILABLE_PRODUCERS });
+});
+
 app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
   try {
     const { maxItems = 100, user = "web" } = req.body || {};
@@ -611,6 +706,15 @@ app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
 app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
   try {
     const { procName, user = "web" } = req.body || {};
+    if (!procName) {
+      return res.status(400).json({ error: "Debes indicar procName." });
+    }
+
+    const knownProc = AVAILABLE_PRODUCERS.some(proc => proc.procName === procName);
+    if (!knownProc) {
+      return res.status(400).json({ error: `SP no registrado en el panel: ${procName}` });
+    }
+
     await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
       { name: "ProcName", type: sql.NVarChar(128), value: procName },
       { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
