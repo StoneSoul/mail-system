@@ -14,6 +14,9 @@
   },
   "scripts": {
     "start:api": "node api/app.js",
-    "start:worker": "node worker/worker.js"
+    "start:worker": "node worker/worker.js",
+    "dev:api": "node --watch api/app.js",
+    "dev:worker": "node --watch worker/worker.js",
+    "dev": "npm run dev:api"
   }
 }
