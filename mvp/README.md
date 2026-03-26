@@ -21,3 +21,9 @@ npm run start:api
 Abrí `mvp/web/index.html` en el navegador (o sírvelo con cualquier servidor estático).
 
 Por defecto consume `http://localhost:3000/api`.
+
+## Publicación en IIS
+
+Si vas a exponer el tablero por DNS (por ejemplo `http://mailboard/`), revisa la guía:
+
+- `docs/iis-default-routing.md`
