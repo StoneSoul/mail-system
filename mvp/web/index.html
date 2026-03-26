@@ -51,6 +51,10 @@
     #loginBox{max-width:360px;border:1px solid var(--border);padding:20px;border-radius:12px;background:#fff}
     #loginError{color:#c62828}
     #feedback{padding:0 20px 14px;color:var(--muted)}
+    .sp-inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+    .sp-inline .field{min-width:280px;flex:1}
+    .info-box{margin:0 20px 16px;padding:12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc}
+    .small{font-size:12px;color:var(--muted);margin:2px 0}
   </style>
 </head>
 <body>
@@ -90,10 +94,23 @@
         <button class="primary" onclick="runSender()">Ejecutar Sender</button>
         <button onclick="requeueRetryable()">Reencolar recuperables</button>
         <button class="danger" onclick="requeueAll()">Reencolar TODO Failed</button>
-        <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
         <button class="danger" onclick="deleteSelected()">Borrar seleccionados</button>
         <button class="danger" onclick="deleteFiltered()">Borrar filtrados</button>
+        <button onclick="loadDbInsights()">Revisar tablas MailDB</button>
         <button onclick="loadAll()">Refrescar</button>
+      </div>
+
+      <div class="controls" style="padding-top:0">
+        <div class="sp-inline">
+          <div class="field">
+            <label>Ejecutar SP</label>
+            <select id="producerSelect" onchange="renderProducerDescription()">
+              <option value="">Seleccioná un SP</option>
+            </select>
+            <p id="producerHelp" class="small">Sin selección.</p>
+          </div>
+          <button onclick="runSelectedProducer()">Ejecutar SP</button>
+        </div>
       </div>
 
       <div class="controls">
@@ -130,6 +147,7 @@
       </div>
 
       <p id="feedback"></p>
+      <div id="dbInfo" class="info-box hidden"></div>
 
       <div class="table-wrap">
         <table id="tbl"></table>
@@ -257,6 +275,43 @@ let data = [];
   feedback.textContent = queueError || `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}.`;
 }
 
+let producersCatalog = [];
+
+function renderProducerDescription(){
+  const selected = document.getElementById("producerSelect")?.value || "";
+  const producer = producersCatalog.find(p => p.procName === selected);
+  producerHelp.textContent = producer
+    ? `${producer.label}: ${producer.description}`
+    : "Sin selección.";
+}
+
+async function loadProducers(){
+  try{
+    const data = await j(`${API}/actions/producers`);
+    producersCatalog = Array.isArray(data.producers) ? data.producers : [];
+    const select = document.getElementById("producerSelect");
+    const current = select.value;
+    select.innerHTML = "<option value=''>Seleccioná un SP</option>" + producersCatalog
+      .map(p => `<option value="${p.procName}">${p.procName} — ${p.label}</option>`)
+      .join("");
+    if(producersCatalog.some(p => p.procName === current)){
+      select.value = current;
+    }
+    renderProducerDescription();
+  }catch(err){
+    feedback.textContent = `No se pudo cargar catálogo de SP: ${err.message}`;
+  }
+}
+
+async function runSelectedProducer(){
+  const procName = document.getElementById("producerSelect")?.value || "";
+  if(!procName){
+    feedback.textContent = "Seleccioná un SP para ejecutar.";
+    return;
+  }
+  await runProducer(procName);
+}
+
 async function runSender(){
   await runAction("sender", async () => {
     await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})});
@@ -332,8 +387,42 @@ async function runProducer(procName){
     await loadAll();
   });
 }
+
+function fmtCount(value){
+  if(value === null || value === undefined) return "N/D";
+  return Number(value).toLocaleString("es-AR");
+}
+
+async function loadDbInsights(){
+  await runAction("diagnóstico de tablas", async () => {
+    const [tableData, columnData] = await Promise.all([
+      j(`${API}/db/tables`),
+      j(`${API}/queue/columns`)
+    ]);
+    const lines = [];
+    lines.push(`<strong>Tabla principal de envíos:</strong> ${tableData.queueSourceTable}`);
+    lines.push(`<div class='small'>El panel lee la cola desde una única tabla lógica. Si ves varios objetos, el resto son tablas de sistema o auditoría.</div>`);
+    lines.push("<hr/>");
+    lines.push("<strong>Tablas detectadas:</strong>");
+    lines.push("<ul>");
+    for(const tbl of (tableData.tables || [])){
+      lines.push(`<li><strong>${tbl.tableName}</strong> — ${tbl.exists ? "Existe" : "No existe"} — Registros: ${fmtCount(tbl.rowCount)} — Rol: ${tbl.role}</li>`);
+    }
+    lines.push("</ul>");
+    lines.push("<strong>Mapeo de columnas visibles:</strong>");
+    lines.push("<ul>");
+    Object.entries(columnData.mapping || {}).forEach(([key, value]) => {
+      lines.push(`<li>${key}: <code>${value}</code></li>`);
+    });
+    lines.push("</ul>");
+    dbInfo.innerHTML = lines.join("");
+    dbInfo.classList.remove("hidden");
+    feedback.textContent = "Diagnóstico de MailDB actualizado.";
+  });
+}
 async function loadAll(){
   await runAction("refresh", async () => {
+    await loadProducers();
     await loadMetrics();
     await loadQueue();
   });
