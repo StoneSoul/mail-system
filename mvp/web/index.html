@@ -141,7 +141,14 @@ const API="/api";
 async function j(url,opt){
   const r=await fetch(url,{credentials:"include",...(opt||{})});
   if(r.status===401){showLogin(); throw new Error("No autorizado");}
-  return r.json();
+
+  const payload = await r.json().catch(() => ({}));
+  if(!r.ok){
+    const msg = payload?.error || `Error HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+
+  return payload;
 }
 
 function showLogin(){
@@ -156,11 +163,15 @@ function showPanel(user){
 }
 
 async function checkAuth(){
-  const st = await j("/auth/status");
-  if(st.loggedIn){
-    showPanel(st.user);
-    await loadAll();
-  }else{
+  try {
+    const st = await j("/auth/status");
+    if(st.loggedIn){
+      showPanel(st.user);
+      await loadAll();
+    }else{
+      showLogin();
+    }
+  } catch (_err) {
     showLogin();
   }
 }
@@ -191,9 +202,15 @@ async function doLogout(){
 }
 
 async function loadMetrics(){
-  const m=await j(`${API}/metrics`);
-  pending.textContent=m.pending||0; sent.textContent=m.sent||0;
-  failed.textContent=m.failed||0; total.textContent=m.total||0;
+  try {
+    const m=await j(`${API}/metrics`);
+    pending.textContent=m.pending||0; sent.textContent=m.sent||0;
+    failed.textContent=m.failed||0; total.textContent=m.total||0;
+  } catch (err) {
+    pending.textContent=0; sent.textContent=0;
+    failed.textContent=0; total.textContent=0;
+    feedback.textContent = `No se pudieron cargar métricas: ${err.message}`;
+  }
 }
 
 async function loadQueue(){
@@ -203,7 +220,15 @@ async function loadQueue(){
   if (status) qs.set("status", status);
   if (errorCategory) qs.set("errorCategory", errorCategory);
 
-  const data=await j(`${API}/queue?${qs.toString()}`);
+  let data = [];
+  let queueError = "";
+  try {
+    const response = await j(`${API}/queue?${qs.toString()}`);
+    data = Array.isArray(response) ? response : [];
+  } catch (err) {
+    queueError = `No se pudo cargar la cola: ${err.message}`;
+  }
+
   const retryRule = document.getElementById("retryRule")?.value || "";
   const filtered = data.filter(x => {
     if (retryRule === "retryable") return Number(x.is_retryable) === 1;
@@ -226,7 +251,7 @@ async function loadQueue(){
       <td>${x.created_at||''}</td>
       <td>${x.last_attempt||''}</td>
     </tr>`).join("") + "</tbody>";
-  feedback.textContent = `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}.`;
+  feedback.textContent = queueError || `Mostrando ${filtered.length} registros${retryRule ? ` con regla "${retryRule}"` : ""}.`;
 }
 
 async function runSender(){ await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})}); loadAll();}
@@ -256,8 +281,12 @@ function retryBadge(isRetryable){
 
 checkAuth();
 setInterval(async () => {
-  const st = await j("/auth/status");
-  if (st.loggedIn) await loadAll();
+  try {
+    const st = await j("/auth/status");
+    if (st.loggedIn) await loadAll();
+  } catch (_err) {
+    // Evita errores no controlados cuando la sesión expira o el backend falla temporalmente.
+  }
 }, 8000);
 </script>
 </body>
