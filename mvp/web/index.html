@@ -166,7 +166,7 @@
 <script>
 const API_ROOT = (() => {
   if (window.__MAIL_API_ROOT__) return String(window.__MAIL_API_ROOT__).replace(/\/$/, "");
-  return "";
+  return "http://localhost:3000";
 })();
 const API = `${API_ROOT}/api`;
 const AUTH = `${API_ROOT}/auth`;
