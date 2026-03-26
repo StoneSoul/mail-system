@@ -29,7 +29,8 @@ function readConfig(prefix, fallbackPrefix) {
 const configs = {
   local: readConfig("DB", "SQL"),
   prod: readConfig("PROD_DB"),
-  test: readConfig("TEST_DB")
+  test: readConfig("TEST_DB"),
+  express: readConfig("EXPRESS_DB", "DB")
 };
 
 function ensureTarget(target = "local") {
@@ -97,6 +98,11 @@ export function getDbTargetsSummary() {
       server: configs.test.server || null,
       database: configs.test.database || null,
       configured: Boolean(configs.test.server && configs.test.database)
+    },
+    express: {
+      server: configs.express.server || null,
+      database: configs.express.database || null,
+      configured: Boolean(configs.express.server && configs.express.database)
     }
   };
 }
