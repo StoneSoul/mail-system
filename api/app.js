@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
+
 import { mailQueue } from "../queue/mailQueue.js";
 import { query } from "../services/db.js";
 
@@ -16,6 +17,9 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// ------------------------
+// Config panel + sesiones
+// ------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
@@ -25,17 +29,6 @@ const PANEL_PASS = process.env.PANEL_PASS || "admin123";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 horas
 const SESSION_COOKIE = "mail_panel_session";
 const sessions = new Map();
-
-const sqlConfig = {
-  user: process.env.DB_USER || process.env.SQL_USER,
-  password: process.env.DB_PASS || process.env.SQL_PASSWORD,
-  server: process.env.DB_SERVER || process.env.SQL_SERVER,
-  database: process.env.DB_NAME || process.env.SQL_DATABASE,
-  options: {
-    encrypt: false,
-    trustServerCertificate: true
-  }
-};
 
 function parseCookies(req) {
   const cookieHeader = req.headers.cookie || "";
@@ -84,6 +77,20 @@ function authMiddleware(req, res, next) {
   req.session = session;
   next();
 }
+
+// ------------------------
+// SQL config + helpers
+// ------------------------
+const sqlConfig = {
+  user: process.env.DB_USER || process.env.SQL_USER,
+  password: process.env.DB_PASS || process.env.SQL_PASSWORD,
+  server: process.env.DB_SERVER || process.env.SQL_SERVER,
+  database: process.env.DB_NAME || process.env.SQL_DATABASE,
+  options: {
+    encrypt: false,
+    trustServerCertificate: true
+  }
+};
 
 async function sqlQuery(text, inputs = []) {
   const pool = await sql.connect(sqlConfig);
@@ -176,7 +183,6 @@ app.post("/send", authMiddleware, async (req, res) => {
   `);
 
   const mail = result.recordset[0];
-
   await mailQueue.add("mail", { ...mail, senderProfile: senderProfile || "default" });
 
   res.send({ ok: true });
@@ -271,5 +277,8 @@ app.get("/api/audit", authMiddleware, async (_req, res) => {
   }
 });
 
+// ------------------------
+// Start server
+// ------------------------
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => console.log(`API running on port ${port}`));
