@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mantine/core": "^7.0.0",
+    "@mantine/hooks": "^7.0.0",
     "axios": "^1.6.0",
+    "mail-system": "file:..",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1",
-    "@mantine/core": "^7.0.0",
-    "@mantine/hooks": "^7.0.0"
+    "react-scripts": "5.0.1"
   },
   "scripts": {
     "start": "react-scripts start",
