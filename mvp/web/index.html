@@ -164,7 +164,13 @@
   </div>
 
 <script>
-const API="/api";
+const API_ROOT = (() => {
+  if (window.__MAIL_API_ROOT__) return String(window.__MAIL_API_ROOT__).replace(/\/$/, "");
+  if (window.location.port === "3000") return "";
+  return `${window.location.protocol}//${window.location.hostname}:3000`;
+})();
+const API = `${API_ROOT}/api`;
+const AUTH = `${API_ROOT}/auth`;
 let queueSearchTimer = null;
 let queueDataCache = [];
 
@@ -194,7 +200,7 @@ function showPanel(user){
 
 async function checkAuth(){
   try {
-    const st = await j("/auth/status");
+    const st = await j(`${AUTH}/status`);
     if(st.loggedIn){
       showPanel(st.user);
       await loadAll();
@@ -211,7 +217,7 @@ async function doLogin(){
   const username = document.getElementById("username").value;
   const password = document.getElementById("password").value;
 
-  const r = await fetch("/auth/login",{
+  const r = await fetch(`${AUTH}/login`,{
     method:"POST",
     headers:{"Content-Type":"application/json"},
     credentials:"include",
@@ -227,7 +233,7 @@ async function doLogin(){
 }
 
 async function doLogout(){
-  await j("/auth/logout", {method:"POST"});
+  await j(`${AUTH}/logout`, {method:"POST"});
   showLogin();
 }
 
@@ -498,7 +504,7 @@ function retryBadge(isRetryable){
 checkAuth();
 setInterval(async () => {
   try {
-    const st = await j("/auth/status");
+    const st = await j(`${AUTH}/status`);
     if (st.loggedIn) await loadAll();
   } catch (_err) {
     // Evita errores no controlados cuando la sesión expira o el backend falla temporalmente.
