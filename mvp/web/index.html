@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Mail Fullboard</title>
+  <style>
+    body{font-family:Arial;margin:20px} .kpi{display:inline-block;margin-right:20px}
+    button{margin-right:10px;margin-bottom:10px}
+    table{border-collapse:collapse;width:100%} td,th{border:1px solid #ddd;padding:6px}
+  </style>
+</head>
+<body>
+  <h2>Mail Fullboard</h2>
+
+  <div class="kpi">Pendientes: <b id="pending">0</b></div>
+  <div class="kpi">Enviados: <b id="sent">0</b></div>
+  <div class="kpi">Fallidos: <b id="failed">0</b></div>
+  <div class="kpi">Total: <b id="total">0</b></div>
+
+  <hr/>
+  <button onclick="runSender()">Ejecutar Sender</button>
+  <button onclick="requeue()">Reencolar Failed</button>
+  <button onclick="runProducer('SP_ENVIO_INFORMEPACIENTE_1')">Ejecutar SP Paciente</button>
+  <button onclick="loadAll()">Refrescar</button>
+
+  <h3>Cola</h3>
+  <table id="tbl"></table>
+
+<script>
+const API="http://localhost:3001/api";
+
+async function j(url,opt){const r=await fetch(url,opt);return r.json();}
+
+async function loadMetrics(){
+  const m=await j(`${API}/metrics`);
+  pending.textContent=m.pending||0; sent.textContent=m.sent||0;
+  failed.textContent=m.failed||0; total.textContent=m.total||0;
+}
+async function loadQueue(){
+  const data=await j(`${API}/queue`);
+  const t=document.getElementById("tbl");
+  t.innerHTML="<tr><th>ID</th><th>Email</th><th>Asunto</th><th>Estado</th><th>Retries</th><th>Error</th><th>Perfil</th><th>Creado</th><th>Intento</th></tr>"
+    + data.map(x=>`<tr><td>${x.id}</td><td>${x.to_email}</td><td>${x.subject||''}</td><td>${x.status}</td><td>${x.retries}</td><td>${x.error_message||''}</td><td>${x.MailProfile||''}</td><td>${x.created_at||''}</td><td>${x.last_attempt||''}</td></tr>`).join("");
+}
+async function runSender(){ await j(`${API}/actions/run-sender`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({maxItems:100,user:"panel"})}); loadAll();}
+async function requeue(){ await j(`${API}/actions/requeue-failed`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({user:"panel"})}); loadAll();}
+async function runProducer(procName){ await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel"})}); loadAll();}
+async function loadAll(){ await loadMetrics(); await loadQueue(); }
+loadAll(); setInterval(loadAll, 8000);
+</script>
+</body>
+</html>
