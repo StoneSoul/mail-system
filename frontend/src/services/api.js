@@ -3,31 +3,22 @@ import axios from "axios";
 const API_URL = "http://localhost:3000";
 
 const apiClient = axios.create({
-  baseURL: API_URL
-});
-
-apiClient.interceptors.request.use(config => {
-  const token = localStorage.getItem("mail_token");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
+  baseURL: API_URL,
+  withCredentials: true
 });
 
 export async function login(username, password) {
-  const res = await apiClient.post("/api/auth/login", { username, password });
-  if (res.data?.token) {
-    localStorage.setItem("mail_token", res.data.token);
-  }
+  const res = await apiClient.post("/auth/login", { username, password });
   return res.data;
 }
 
 export function logout() {
-  localStorage.removeItem("mail_token");
+  return apiClient.post("/auth/logout");
 }
 
-export function isLoggedIn() {
-  return Boolean(localStorage.getItem("mail_token"));
+export async function getAuthStatus() {
+  const res = await apiClient.get("/auth/status");
+  return res.data;
 }
 
 export async function getMails(status) {
