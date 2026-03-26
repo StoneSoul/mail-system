@@ -150,18 +150,25 @@ async function resolveMailQueueColumns() {
       AND TABLE_NAME = 'MailQueue'
   `);
 
-  const existing = new Set(rows.map(row => String(row.COLUMN_NAME)));
+  const existingByLower = new Map(
+    rows.map(row => {
+      const original = String(row.COLUMN_NAME);
+      return [original.toLowerCase(), original];
+    })
+  );
 
   function pick(candidates) {
     for (const candidate of candidates) {
-      if (existing.has(candidate)) return asSqlIdentifier(candidate);
+      const matched = existingByLower.get(String(candidate).toLowerCase());
+      if (matched) return asSqlIdentifier(matched);
     }
     return `CAST(NULL AS NVARCHAR(4000))`;
   }
 
   function pickForUpdate(candidates) {
     for (const candidate of candidates) {
-      if (existing.has(candidate)) return asSqlIdentifier(candidate);
+      const matched = existingByLower.get(String(candidate).toLowerCase());
+      if (matched) return asSqlIdentifier(matched);
     }
     return null;
   }
@@ -211,13 +218,18 @@ async function resolveMailProfileExpression() {
       AND COLUMN_NAME IN ('MailProfile', 'sender_profile')
   `);
 
-  const names = new Set(columns.map(row => String(row.COLUMN_NAME)));
-  if (names.has("MailProfile")) {
-    cachedMailProfileExpression = "MailProfile";
+  const namesByLower = new Map(
+    columns.map(row => {
+      const original = String(row.COLUMN_NAME);
+      return [original.toLowerCase(), original];
+    })
+  );
+  if (namesByLower.has("mailprofile")) {
+    cachedMailProfileExpression = asSqlIdentifier(namesByLower.get("mailprofile"));
     return cachedMailProfileExpression;
   }
-  if (names.has("sender_profile")) {
-    cachedMailProfileExpression = "sender_profile AS MailProfile";
+  if (namesByLower.has("sender_profile")) {
+    cachedMailProfileExpression = `${asSqlIdentifier(namesByLower.get("sender_profile"))} AS MailProfile`;
     return cachedMailProfileExpression;
   }
 
