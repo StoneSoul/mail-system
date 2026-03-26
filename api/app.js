@@ -176,6 +176,85 @@ function getAvailableProducers(target = null) {
   return [...byTarget.prod, ...byTarget.test, ...byTarget.express];
 }
 
+function normalizeProcName(procName = "") {
+  return String(procName || "")
+    .replace(/^\[?dbo\]?\./i, "")
+    .replace(/^\[(.+)\]$/i, "$1")
+    .trim();
+}
+
+async function fetchRemoteProducers(target) {
+  const rows = await sqlQuery(
+    `
+      SELECT
+        p.name AS procName,
+        s.name AS schemaName
+      FROM sys.procedures p
+      INNER JOIN sys.schemas s ON s.schema_id = p.schema_id
+      WHERE p.is_ms_shipped = 0
+        AND s.name = 'dbo'
+      ORDER BY p.name
+    `,
+    [],
+    target
+  );
+
+  return rows.map(row => {
+    const procName = String(row.procName);
+    return {
+      procName,
+      label: `${procName} (${target.toUpperCase()})`,
+      description: `SP detectado automáticamente en ${target}.`
+    };
+  });
+}
+
+async function getAvailableProducersForTarget(target) {
+  const configured = getAvailableProducers(target);
+  let remote = [];
+
+  try {
+    remote = await fetchRemoteProducers(target);
+  } catch (_err) {
+    remote = [];
+  }
+
+  const merged = [...configured, ...remote];
+  const unique = new Map();
+  for (const producer of merged) {
+    const key = normalizeProcName(producer.procName).toLowerCase();
+    if (!key) continue;
+    if (!unique.has(key)) {
+      unique.set(key, {
+        ...producer,
+        procName: normalizeProcName(producer.procName)
+      });
+    }
+  }
+
+  return Array.from(unique.values()).sort((a, b) => a.procName.localeCompare(b.procName));
+}
+
+async function remoteProcedureExists(target, procName) {
+  const normalized = normalizeProcName(procName);
+  if (!normalized) return false;
+
+  const rows = await sqlQuery(
+    `
+      SELECT TOP 1 1 AS ok
+      FROM sys.procedures p
+      INNER JOIN sys.schemas s ON s.schema_id = p.schema_id
+      WHERE p.is_ms_shipped = 0
+        AND s.name = 'dbo'
+        AND LOWER(p.name) = LOWER(@procName)
+    `,
+    [{ name: "procName", type: sql.NVarChar(128), value: normalized }],
+    target
+  );
+
+  return rows.length > 0;
+}
+
 const MAILDB_TABLES = [
   "spt_fallback_db",
   "spt_fallback_dev",
@@ -720,13 +799,19 @@ app.get("/api/db/tables", authMiddleware, async (_req, res) => {
   }
 });
 
-app.get("/api/actions/producers", authMiddleware, (req, res) => {
+app.get("/api/actions/producers", authMiddleware, async (req, res) => {
   try {
     const target = req.query?.target ? resolveRemoteTarget(req.query.target) : null;
+    const producersByTarget = {
+      prod: await getAvailableProducersForTarget("prod"),
+      test: await getAvailableProducersForTarget("test"),
+      express: await getAvailableProducersForTarget("express")
+    };
+
     res.json({
       ok: true,
-      producers: getAvailableProducers(target),
-      producersByTarget: getAvailableProducersByTarget()
+      producers: target ? producersByTarget[target] : [...producersByTarget.prod, ...producersByTarget.test, ...producersByTarget.express],
+      producersByTarget
     });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -799,17 +884,18 @@ app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
   try {
     const { procName, user = "web", target = "prod" } = req.body || {};
     const remoteTarget = resolveRemoteTarget(target);
-    if (!procName) {
+    const normalizedProcName = normalizeProcName(procName);
+    if (!normalizedProcName) {
       return res.status(400).json({ error: "Debes indicar procName." });
     }
 
-    const knownProc = getAvailableProducers(remoteTarget).some(proc => proc.procName === procName);
-    if (!knownProc) {
-      return res.status(400).json({ error: `SP no registrado en el panel: ${procName}` });
+    const exists = await remoteProcedureExists(remoteTarget, normalizedProcName);
+    if (!exists) {
+      return res.status(400).json({ error: `SP no encontrada en '${remoteTarget}': ${normalizedProcName}` });
     }
 
     await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
-      { name: "ProcName", type: sql.NVarChar(128), value: procName },
+      { name: "ProcName", type: sql.NVarChar(128), value: normalizedProcName },
       { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
     ], remoteTarget);
     res.json({ ok: true, target: remoteTarget });
