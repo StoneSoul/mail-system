@@ -1,6 +1,7 @@
 import express from "express";
 import sql from "mssql";
 import dotenv from "dotenv";
+import crypto from "crypto";
 import { mailQueue } from "../queue/mailQueue.js";
 import { query } from "../services/db.js";
 
@@ -13,6 +14,11 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+const AUTH_SECRET = process.env.AUTH_SECRET || "change-this-secret";
+const AUTH_USER = process.env.AUTH_USER || "admin";
+const AUTH_PASS = process.env.AUTH_PASS || "admin123";
+const TOKEN_TTL_MS = 1000 * 60 * 60 * 8; // 8 horas
+
 const sqlConfig = {
   user: process.env.DB_USER || process.env.SQL_USER,
   password: process.env.DB_PASS || process.env.SQL_PASSWORD,
@@ -23,6 +29,41 @@ const sqlConfig = {
     trustServerCertificate: true
   }
 };
+
+function createAuthToken(username) {
+  const expiresAt = Date.now() + TOKEN_TTL_MS;
+  const payload = `${username}.${expiresAt}`;
+  const signature = crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest("hex");
+  return Buffer.from(`${payload}.${signature}`).toString("base64url");
+}
+
+function verifyAuthToken(token) {
+  try {
+    const decoded = Buffer.from(token, "base64url").toString("utf8");
+    const [username, expiresAtRaw, signature] = decoded.split(".");
+    if (!username || !expiresAtRaw || !signature) return false;
+
+    const payload = `${username}.${expiresAtRaw}`;
+    const expectedSig = crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest("hex");
+    const isSigValid = crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig));
+    const isExpired = Number(expiresAtRaw) < Date.now();
+
+    return isSigValid && !isExpired;
+  } catch {
+    return false;
+  }
+}
+
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (!token || !verifyAuthToken(token)) {
+    return res.status(401).json({ ok: false, error: "No autorizado" });
+  }
+
+  next();
+}
 
 async function sqlQuery(text, inputs = []) {
   const pool = await sql.connect(sqlConfig);
@@ -58,7 +99,21 @@ createBullBoard({
   serverAdapter
 });
 
-app.use("/admin/queues", serverAdapter.getRouter());
+app.use("/admin/queues", authMiddleware, serverAdapter.getRouter());
+
+// ------------------------
+// Auth
+// ------------------------
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body || {};
+
+  if (username !== AUTH_USER || password !== AUTH_PASS) {
+    return res.status(401).json({ ok: false, error: "Credenciales inválidas" });
+  }
+
+  const token = createAuthToken(username);
+  return res.json({ ok: true, token });
+});
 
 // ------------------------
 // Endpoints API
@@ -67,22 +122,11 @@ app.get("/", (_req, res) => {
   res.send({
     ok: true,
     service: "mail-system-api",
-    routes: [
-      "/send",
-      "/mails",
-      "/mails/retry/:id",
-      "/admin/queues",
-      "/api/metrics",
-      "/api/queue",
-      "/api/actions/run-sender",
-      "/api/actions/requeue-failed",
-      "/api/actions/run-producer",
-      "/api/audit"
-    ]
+    message: "Servicio operativo"
   });
 });
 
-app.post("/send", async (req, res) => {
+app.post("/send", authMiddleware, async (req, res) => {
   const { to, subject, body, senderProfile } = req.body;
 
   const result = await query(`
@@ -98,12 +142,12 @@ app.post("/send", async (req, res) => {
   res.send({ ok: true });
 });
 
-app.get("/mails", async (_req, res) => {
+app.get("/mails", authMiddleware, async (_req, res) => {
   const result = await query("SELECT * FROM MailQueue ORDER BY id DESC");
   res.send(result.recordset);
 });
 
-app.post("/mails/retry/:id", async (req, res) => {
+app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
   const id = Number(req.params.id);
   const result = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
   const mail = result.recordset[0];
@@ -116,7 +160,7 @@ app.post("/mails/retry/:id", async (req, res) => {
 // ------------------------
 // Endpoints Fullboard SQL-first (MVP)
 // ------------------------
-app.get("/api/metrics", async (_req, res) => {
+app.get("/api/metrics", authMiddleware, async (_req, res) => {
   try {
     const data = await sqlQuery("SELECT * FROM dbo.VW_MAILQUEUE_METRICS");
     res.json(data[0] || {});
@@ -125,7 +169,7 @@ app.get("/api/metrics", async (_req, res) => {
   }
 });
 
-app.get("/api/queue", async (req, res) => {
+app.get("/api/queue", authMiddleware, async (req, res) => {
   try {
     const status = req.query.status;
     const where = status ? "WHERE [status]=@status" : "";
@@ -140,7 +184,7 @@ app.get("/api/queue", async (req, res) => {
   }
 });
 
-app.post("/api/actions/run-sender", async (req, res) => {
+app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
   try {
     const { maxItems = 100, user = "web" } = req.body || {};
     await executeProcedure("dbo.SP_ADMIN_RUN_SENDER", [
@@ -153,7 +197,7 @@ app.post("/api/actions/run-sender", async (req, res) => {
   }
 });
 
-app.post("/api/actions/requeue-failed", async (req, res) => {
+app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
   try {
     const { user = "web" } = req.body || {};
     await executeProcedure("dbo.SP_ADMIN_REQUEUE_FAILED", [
@@ -165,7 +209,7 @@ app.post("/api/actions/requeue-failed", async (req, res) => {
   }
 });
 
-app.post("/api/actions/run-producer", async (req, res) => {
+app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
   try {
     const { procName, user = "web" } = req.body || {};
     await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
@@ -178,7 +222,7 @@ app.post("/api/actions/run-producer", async (req, res) => {
   }
 });
 
-app.get("/api/audit", async (_req, res) => {
+app.get("/api/audit", authMiddleware, async (_req, res) => {
   try {
     const data = await sqlQuery("SELECT TOP 100 * FROM dbo.MailAdminAudit ORDER BY Id DESC");
     res.json(data);

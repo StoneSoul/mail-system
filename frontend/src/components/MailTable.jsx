@@ -3,10 +3,16 @@ import { getMails, retryMail } from "../services/api.js";
 
 export default function MailTable({ status }) {
   const [mails, setMails] = useState([]);
+  const [error, setError] = useState("");
 
   async function load() {
-    const data = await getMails(status);
-    setMails(data);
+    try {
+      const data = await getMails(status);
+      setMails(data);
+      setError("");
+    } catch {
+      setError("No se pudieron cargar los mails. Verificá tu sesión.");
+    }
   }
 
   async function handleRetry(id) {
@@ -14,11 +20,14 @@ export default function MailTable({ status }) {
     load();
   }
 
-  useEffect(() => { load(); }, [status]);
+  useEffect(() => {
+    load();
+  }, [status]);
 
   return (
     <div>
       <h2>{status || "Todos"} mails</h2>
+      {error && <p style={{ color: "red" }}>{error}</p>}
       <table border="1" cellPadding="5">
         <thead>
           <tr>
