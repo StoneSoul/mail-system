@@ -85,12 +85,20 @@ export default function MailTable({ status }) {
     return maxRetries === null ? `${retries}` : `${retries}/${maxRetries}`;
   }
 
-  return (
-    <div>
-      <h2>{status || "Todos"} mails</h2>
-      {error && <p style={{ color: "red" }}>{error}</p>}
+  function formatField(value) {
+    if (value === null || value === undefined || value === "") {
+      return "—";
+    }
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+    return value;
+  }
+
+  return (
+    <div className="table-section">
+      <h2>{status || "Todos"} mails</h2>
+      {error && <p className="error-text">{error}</p>}
+
+      <div className="table-toolbar">
         {status === "Failed" && (
           <>
             <label htmlFor="errorCategory">Filtro error:</label>
@@ -117,46 +125,68 @@ export default function MailTable({ status }) {
         </button>
       </div>
 
-      <table border="1" cellPadding="5">
-        <thead>
-          <tr>
-            <th>
-              <input
-                type="checkbox"
-                checked={mails.length > 0 && selectedIds.length === mails.length}
-                onChange={toggleSelectAllVisible}
-              />
-            </th>
-            <th>ID</th><th>Email</th><th>Asunto</th><th>Status</th><th>Error</th><th>Retries</th><th>Acciones</th>
-          </tr>
-        </thead>
-        <tbody>
-          {mails.map(m => (
-            <tr key={m.id}>
-              <td>
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(m.id)}
-                  onChange={() => toggleSelection(m.id)}
-                />
-              </td>
-              <td>{m.id}</td>
-              <td>{m.to_email}</td>
-              <td>{m.subject}</td>
-              <td>{m.status}</td>
-              <td>{m.error_message}</td>
-              <td>{formatRetries(m)}</td>
-              <td>
-                {m.status === "Failed" && (
-                  <button onClick={() => handleRetry(m.id)} disabled={busy}>
-                    Reintentar
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {mails.length === 0 ? (
+        <p className="empty-state">No hay resultados para mostrar con este filtro.</p>
+      ) : (
+        <div className="table-shell">
+          <table>
+            <colgroup>
+              <col style={{ width: "46px" }} />
+              <col style={{ width: "72px" }} />
+              <col style={{ width: "20%" }} />
+              <col style={{ width: "22%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "30%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "130px" }} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    checked={mails.length > 0 && selectedIds.length === mails.length}
+                    onChange={toggleSelectAllVisible}
+                  />
+                </th>
+                <th>ID</th>
+                <th>Email</th>
+                <th>Asunto</th>
+                <th>Status</th>
+                <th>Error</th>
+                <th>Retries</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mails.map(m => (
+                <tr key={m.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(m.id)}
+                      onChange={() => toggleSelection(m.id)}
+                    />
+                  </td>
+                  <td>{m.id}</td>
+                  <td className="cell-wrap">{formatField(m.to_email)}</td>
+                  <td className="cell-wrap">{formatField(m.subject)}</td>
+                  <td>{formatField(m.status)}</td>
+                  <td className="cell-wrap">{formatField(m.error_message)}</td>
+                  <td>{formatRetries(m)}</td>
+                  <td>
+                    {m.status === "Failed" && (
+                      <button onClick={() => handleRetry(m.id)} disabled={busy}>
+                        Reintentar
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
