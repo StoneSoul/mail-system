@@ -25,6 +25,7 @@ const __dirname = path.dirname(__filename);
 const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
 const remoteObjectsPath = path.resolve(__dirname, "../mvp/web/remote-objects.html");
 const dbmailCallersPath = path.resolve(__dirname, "../mvp/web/dbmail-callers.html");
+const mailDbInsightsPath = path.resolve(__dirname, "../mvp/web/maildb-insights.html");
 
 function normalizeCredential(rawValue, fallback) {
   const source = rawValue ?? fallback;
@@ -583,6 +584,10 @@ app.get("/remote-objects", authMiddleware, (_req, res) => {
 
 app.get("/dbmail-callers", authMiddleware, (_req, res) => {
   res.sendFile(dbmailCallersPath);
+});
+
+app.get("/maildb-insights", authMiddleware, (_req, res) => {
+  res.sendFile(mailDbInsightsPath);
 });
 
 app.get("/favicon.ico", (_req, res) => {
