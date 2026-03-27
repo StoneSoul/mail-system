@@ -58,6 +58,22 @@
     .sp-row{display:flex;gap:8px;align-items:center}
     .sp-row select{flex:1 1 auto;min-width:0}
     .sp-row button{white-space:nowrap}
+    .db-filter-wrap{position:relative}
+    .db-filter-panel{
+      position:absolute;
+      top:100%;
+      left:0;
+      z-index:20;
+      min-width:280px;
+      margin-top:6px;
+      padding:10px;
+      border:1px solid var(--border);
+      border-radius:10px;
+      background:#fff;
+      box-shadow:var(--shadow);
+    }
+    .db-filter-list{display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
+    .db-filter-item{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text)}
     #remoteTarget{max-width:none}
     #producerSelect{min-width:0}
     @media (max-width: 880px){
@@ -117,11 +133,18 @@
         <div class="sp-inline">
           <div class="field remote-field">
             <label>Ambiente remoto</label>
-            <select id="remoteTarget" onchange="loadProducers()">
+            <select id="remoteTarget" onchange="onRemoteTargetChange()">
               <option value="prod">DTTPROD</option>
               <option value="test">DTTPRUEBA</option>
               <option value="express">SRV-EnviosMail (SQL Express)</option>
             </select>
+            <div class="db-filter-wrap">
+              <button type="button" onclick="toggleDatabaseFilterPanel()">Elegir bases</button>
+              <div id="databaseFilterPanel" class="db-filter-panel hidden">
+                <div id="databaseFilterOptions" class="db-filter-list"></div>
+              </div>
+              <p id="databaseFilterSummary" class="small">Cargando bases...</p>
+            </div>
           </div>
           <div class="field producer-field">
             <label>Ejecutar SP</label>
@@ -332,6 +355,9 @@ let data = [];
 }
 
 let producersCatalog = [];
+let visibleProducersCatalog = [];
+let availableDatabasesByTarget = {};
+let selectedDatabasesByTarget = {};
 
 const FALLBACK_PRODUCERS_BY_TARGET = {
   prod: [
@@ -354,9 +380,102 @@ function getRemoteTarget(){
   return document.getElementById("remoteTarget")?.value || "prod";
 }
 
+function producerOptionValue(producer){
+  return `${producer.procName}||${producer.sourceDb || ""}`;
+}
+
+function findProducerByOptionValue(optionValue){
+  return visibleProducersCatalog.find(p => producerOptionValue(p) === optionValue) || null;
+}
+
+function ensureSelectedDatabases(target){
+  const available = availableDatabasesByTarget[target] || [];
+  const selected = Array.isArray(selectedDatabasesByTarget[target]) ? selectedDatabasesByTarget[target] : [];
+  const sanitized = selected.filter(db => available.includes(db));
+  if (sanitized.length === 0 && available.length > 0) {
+    selectedDatabasesByTarget[target] = [...available];
+  } else {
+    selectedDatabasesByTarget[target] = sanitized;
+  }
+}
+
+function renderDatabaseFilterPanel(){
+  const target = getRemoteTarget();
+  const optionsContainer = document.getElementById("databaseFilterOptions");
+  const summary = document.getElementById("databaseFilterSummary");
+  const available = availableDatabasesByTarget[target] || [];
+  ensureSelectedDatabases(target);
+  const selected = selectedDatabasesByTarget[target] || [];
+
+  if (!available.length) {
+    optionsContainer.innerHTML = "<span class='small'>Sin bases configuradas para este ambiente.</span>";
+    summary.textContent = "Sin filtros por base para este ambiente.";
+    return;
+  }
+
+  optionsContainer.innerHTML = available
+    .map(db => `
+      <label class="db-filter-item">
+        <input type="checkbox" value="${db}" ${selected.includes(db) ? "checked" : ""} onchange="toggleDatabaseSelection(this.value, this.checked)"/>
+        <span>${db}</span>
+      </label>
+    `)
+    .join("");
+
+  summary.textContent = `Bases seleccionadas (${selected.length}/${available.length}): ${selected.join(", ")}`;
+}
+
+function toggleDatabaseSelection(databaseName, isChecked){
+  const target = getRemoteTarget();
+  const available = availableDatabasesByTarget[target] || [];
+  const current = new Set(selectedDatabasesByTarget[target] || available);
+  if (isChecked) current.add(databaseName);
+  else current.delete(databaseName);
+
+  if (current.size === 0 && available.length > 0) {
+    feedback.textContent = "Debes dejar al menos una base seleccionada.";
+    current.add(available[0]);
+  }
+
+  selectedDatabasesByTarget[target] = available.filter(db => current.has(db));
+  renderDatabaseFilterPanel();
+  renderProducerOptions();
+}
+
+function toggleDatabaseFilterPanel(){
+  const panel = document.getElementById("databaseFilterPanel");
+  panel.classList.toggle("hidden");
+}
+
+function onRemoteTargetChange(){
+  document.getElementById("databaseFilterPanel")?.classList.add("hidden");
+  loadProducers();
+}
+
+function renderProducerOptions(){
+  const target = getRemoteTarget();
+  const selectedDbs = new Set(selectedDatabasesByTarget[target] || []);
+  const select = document.getElementById("producerSelect");
+  const current = select.value;
+
+  visibleProducersCatalog = producersCatalog.filter(producer => {
+    if (!producer?.sourceDb) return true;
+    return selectedDbs.has(producer.sourceDb);
+  });
+
+  select.innerHTML = "<option value=''>Seleccioná un SP</option>" + visibleProducersCatalog
+    .map(p => `<option value="${producerOptionValue(p)}">${p.procName} — ${p.label}</option>`)
+    .join("");
+
+  if (visibleProducersCatalog.some(p => producerOptionValue(p) === current)) {
+    select.value = current;
+  }
+  renderProducerDescription();
+}
+
 function renderProducerDescription(){
   const selected = document.getElementById("producerSelect")?.value || "";
-  const producer = producersCatalog.find(p => p.procName === selected);
+  const producer = findProducerByOptionValue(selected);
   producerHelp.textContent = producer
     ? `${producer.label}: ${producer.description}`
     : "Sin selección.";
@@ -389,27 +508,25 @@ async function loadProducers(){
     }
 
     producersCatalog = Array.isArray(data?.producers) ? data.producers : [];
-    const select = document.getElementById("producerSelect");
-    const current = select.value;
-    select.innerHTML = "<option value=''>Seleccioná un SP</option>" + producersCatalog
-      .map(p => `<option value="${p.procName}">${p.procName} — ${p.label}</option>`)
-      .join("");
-    if(producersCatalog.some(p => p.procName === current)){
-      select.value = current;
+    availableDatabasesByTarget = data?.availableDatabasesByTarget || {};
+    if (!availableDatabasesByTarget[target]) {
+      availableDatabasesByTarget[target] = [...new Set(producersCatalog.map(p => p.sourceDb).filter(Boolean))];
     }
-    renderProducerDescription();
+    renderDatabaseFilterPanel();
+    renderProducerOptions();
   }catch(err){
     feedback.textContent = `No se pudo cargar catálogo de SP: ${err.message}`;
   }
 }
 
 async function runSelectedProducer(){
-  const procName = document.getElementById("producerSelect")?.value || "";
-  if(!procName){
+  const selected = document.getElementById("producerSelect")?.value || "";
+  const producer = findProducerByOptionValue(selected);
+  if(!producer){
     feedback.textContent = "Seleccioná un SP para ejecutar.";
     return;
   }
-  await runProducer(procName);
+  await runProducer(producer);
 }
 
 async function runSender(){
@@ -481,9 +598,9 @@ async function requeueRetryable(){
     await loadAll();
   });
 }
-async function runProducer(procName){
-  await runAction(`ejecución de ${procName}`, async () => {
-    await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName,user:"panel",target:getRemoteTarget()})});
+async function runProducer(producer){
+  await runAction(`ejecución de ${producer.procName}`, async () => {
+    await j(`${API}/actions/run-producer`, {method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({procName:producer.procName,sourceDb:producer.sourceDb || null,user:"panel",target:getRemoteTarget()})});
     await loadAll();
   });
 }
