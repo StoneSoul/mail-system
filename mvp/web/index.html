@@ -123,6 +123,7 @@
               <div class="settings-actions">
                 <button type="button" onclick="openRemoteObjects()">Visibilidad de SP (dbo)</button>
                 <button type="button" onclick="openDbMailCallers()">Relevamiento de sp_send_dbmail</button>
+                <button type="button" onclick="openSqlMailMonitor()">Monitoreo SQL Mail</button>
                 <button type="button" onclick="openMailDbInsights()">Revisar tablas MailDB</button>
               </div>
             </div>
@@ -300,6 +301,10 @@ function openRemoteObjects(){
 
 function openDbMailCallers(){
   window.location.href = `${API_ROOT}/dbmail-callers`;
+}
+
+function openSqlMailMonitor(){
+  window.location.href = `${API_ROOT}/sqlmail-monitor`;
 }
 
 function openMailDbInsights(){
