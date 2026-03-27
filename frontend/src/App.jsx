@@ -13,6 +13,7 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState("Dashboard");
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -117,7 +118,41 @@ export default function App() {
     <div style={{ fontFamily: "Arial", padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1>Mail System Dashboard</h1>
-        <button onClick={handleLogout}>Cerrar sesión</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
+          <button
+            onClick={() => setShowSettings(prev => !prev)}
+            aria-haspopup="true"
+            aria-expanded={showSettings}
+          >
+            ⚙️ Ajustes
+          </button>
+          {showSettings && (
+            <div
+              style={{
+                position: "absolute",
+                right: 86,
+                top: 38,
+                minWidth: 260,
+                border: "1px solid #d1d5db",
+                background: "#fff",
+                borderRadius: 8,
+                boxShadow: "0 8px 24px rgba(0, 0, 0, 0.12)",
+                padding: 8,
+                zIndex: 20
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <a href="/remote-objects" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
+                  Revisar visibilidad de SP (dbo)
+                </a>
+                <a href="/dbmail-callers" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
+                  Relevamiento de sp_send_dbmail
+                </a>
+              </div>
+            </div>
+          )}
+          <button onClick={handleLogout}>Cerrar sesión</button>
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
