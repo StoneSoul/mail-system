@@ -121,6 +121,7 @@
 
       <div class="toolbar">
         <button class="primary" onclick="runSender()">Ejecutar Sender</button>
+        <button onclick="openRemoteObjects()">Configurar dbo visibles</button>
         <button onclick="requeueRetryable()">Reencolar recuperables</button>
         <button class="danger" onclick="requeueAll()">Reencolar TODO Failed</button>
         <button class="danger" onclick="deleteSelected()">Borrar seleccionados</button>
@@ -276,6 +277,10 @@ async function doLogin(){
 async function doLogout(){
   await j(`${AUTH}/logout`, {method:"POST"});
   showLogin();
+}
+
+function openRemoteObjects(){
+  window.location.href = `${API_ROOT}/remote-objects`;
 }
 
 async function loadMetrics(){

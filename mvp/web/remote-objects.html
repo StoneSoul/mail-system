@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Catálogo remoto de dbo</title>
+  <style>
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fb;color:#111827}
+    .shell{max-width:1100px;margin:22px auto;padding:0 16px}
+    .card{background:#fff;border:1px solid #dbe3ef;border-radius:14px}
+    .head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #e5e7eb}
+    .controls{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e7eb}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;padding:12px 16px}
+    .db{border:1px solid #e5e7eb;border-radius:10px;padding:10px;background:#fafafa}
+    .db h3{margin:0 0 8px;font-size:14px}
+    .row{display:flex;gap:8px;align-items:center;margin:6px 0;font-size:13px}
+    .muted{font-size:12px;color:#6b7280}
+    button{border:1px solid #cdd6e2;background:#fff;padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div id="loginHint" class="card hidden" style="padding:16px">
+    <p>Tu sesión expiró. Volvé al panel principal para iniciar sesión.</p>
+    <a href="/">Ir al login</a>
+  </div>
+
+  <div id="main" class="card hidden">
+    <div class="head">
+      <div>
+        <h2 style="margin:0">Visibilidad de dbo por ambiente</h2>
+        <p class="muted" style="margin:4px 0 0">Elegí qué SP se muestran en el Fullboard.</p>
+      </div>
+      <div>
+        <a href="/" style="margin-right:8px">← Volver al Fullboard</a>
+        <button onclick="logout()">Cerrar sesión</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <label>Ambiente</label>
+      <select id="target" onchange="loadObjects()">
+        <option value="prod">DTTPROD</option>
+        <option value="test">DTTPRUEBA</option>
+        <option value="express">SRV-EnviosMail (SQL Express)</option>
+      </select>
+      <button onclick="selectAll(true)">Seleccionar todo</button>
+      <button onclick="selectAll(false)">Deseleccionar todo</button>
+      <button class="primary" onclick="saveSelection()">Guardar selección</button>
+    </div>
+
+    <p id="feedback" class="muted" style="padding:0 16px"></p>
+    <div id="grid" class="grid"></div>
+  </div>
+</div>
+
+<script>
+const API_ROOT = (() => {
+  if (window.__MAIL_API_ROOT__) return String(window.__MAIL_API_ROOT__).replace(/\/$/, "");
+  return "http://localhost:3000";
+})();
+const API = `${API_ROOT}/api`;
+const AUTH = `${API_ROOT}/auth`;
+
+async function j(url,opt){
+  const r=await fetch(url,{credentials:"include",...(opt||{})});
+  if(r.status===401){
+    showLoginHint();
+    throw new Error("No autorizado");
+  }
+  const payload = await r.json().catch(() => ({}));
+  if(!r.ok){
+    throw new Error(payload?.error || `Error HTTP ${r.status}`);
+  }
+  return payload;
+}
+
+function showMain(){
+  main.classList.remove("hidden");
+  loginHint.classList.add("hidden");
+}
+
+function showLoginHint(){
+  loginHint.classList.remove("hidden");
+  main.classList.add("hidden");
+}
+
+async function checkAuth(){
+  try{
+    const status = await j(`${AUTH}/status`);
+    if(!status.loggedIn){
+      showLoginHint();
+      return;
+    }
+    showMain();
+    await loadObjects();
+  }catch(_){
+    showLoginHint();
+  }
+}
+
+function buildProcId(item){
+  return `${item.sourceDb}||${item.procName}`;
+}
+
+function parseProcId(id){
+  const [sourceDb, procName] = String(id||"").split("||");
+  return { sourceDb, procName };
+}
+
+async function loadObjects(){
+  try{
+    const target = document.getElementById("target").value;
+    const data = await j(`${API}/db/remote-objects?target=${encodeURIComponent(target)}`);
+    const byDb = data.objectsByDatabase || {};
+
+    grid.innerHTML = Object.keys(byDb).sort().map(db => {
+      const rows = byDb[db].map(item => `
+        <label class="row">
+          <input type="checkbox" class="proc-check" value="${buildProcId(item)}" ${item.visibleInFullboard ? "checked" : ""}/>
+          <span>${item.procName}</span>
+        </label>
+      `).join("");
+      return `<div class="db"><h3>${db}</h3>${rows || "<span class='muted'>Sin SP</span>"}</div>`;
+    }).join("");
+
+    feedback.textContent = `Ambiente ${target.toUpperCase()}: ${Object.values(byDb).reduce((acc, list) => acc + list.length, 0)} SP detectados.`;
+  }catch(err){
+    feedback.textContent = `Error cargando catálogo remoto: ${err.message}`;
+  }
+}
+
+function selectAll(checked){
+  document.querySelectorAll(".proc-check").forEach(chk => chk.checked = checked);
+}
+
+async function saveSelection(){
+  try{
+    const target = document.getElementById("target").value;
+    const selectedObjects = Array.from(document.querySelectorAll(".proc-check:checked"))
+      .map(chk => parseProcId(chk.value))
+      .filter(item => item.sourceDb && item.procName);
+
+    const response = await j(`${API}/db/remote-objects/selection`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ target, selectedObjects })
+    });
+
+    feedback.textContent = `Selección guardada para ${target.toUpperCase()}. SP visibles: ${response.selectedCount}.`;
+  }catch(err){
+    feedback.textContent = `No se pudo guardar selección: ${err.message}`;
+  }
+}
+
+async function logout(){
+  try{ await j(`${AUTH}/logout`, {method:"POST"}); } catch(_err) {}
+  location.href = "/";
+}
+
+checkAuth();
+</script>
+</body>
+</html>
