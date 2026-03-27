@@ -1172,26 +1172,27 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.last_mod_date,
         sp.name AS profile_name,
         proc.last_process_id,
-        ev.last_event_type,
-        ev.last_event_date,
         ISNULL(ev.last_error, '') AS last_error
       FROM msdb.dbo.sysmail_allitems ai
       LEFT JOIN msdb.dbo.sysmail_profile sp ON ai.profile_id = sp.profile_id
-      OUTER APPLY (
-        SELECT TOP (1) el.process_id AS last_process_id
+      LEFT JOIN (
+        SELECT
+          el.mailitem_id,
+          MAX(el.process_id) AS last_process_id
         FROM msdb.dbo.sysmail_event_log el
-        WHERE el.mailitem_id = ai.mailitem_id
-          AND el.process_id IS NOT NULL
-        ORDER BY el.log_date DESC, el.log_id DESC
-      ) proc
-      OUTER APPLY (
-        SELECT TOP (1) el.[description] AS last_error
-             , el.event_type AS last_event_type
-             , el.log_date AS last_event_date
+        WHERE el.process_id IS NOT NULL
+        GROUP BY el.mailitem_id
+      ) proc ON proc.mailitem_id = ai.mailitem_id
+      LEFT JOIN (
+        SELECT
+          el.mailitem_id,
+          MAX(CASE WHEN LOWER(ISNULL(el.event_type, '')) = 'error'
+              THEN ISNULL(el.[description], '')
+              ELSE ''
+            END) AS last_error
         FROM msdb.dbo.sysmail_event_log el
-        WHERE el.mailitem_id = ai.mailitem_id
-        ORDER BY el.log_date DESC, el.log_id DESC
-      ) ev
+        GROUP BY el.mailitem_id
+      ) ev ON ev.mailitem_id = ai.mailitem_id
       WHERE 1 = 1
       ${statusClause}
       ORDER BY ai.mailitem_id DESC
@@ -1222,9 +1223,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
     sentDate: row.sent_date || null,
     lastModDate: row.last_mod_date || null,
     lastError: String(row.last_error || ""),
-    lastProcessId: row.last_process_id === null || row.last_process_id === undefined ? null : Number(row.last_process_id),
-    lastEventType: String(row.last_event_type || ""),
-    lastEventDate: row.last_event_date || null
+    lastProcessId: row.last_process_id === null || row.last_process_id === undefined ? null : Number(row.last_process_id)
   }));
 }
 
@@ -1340,19 +1339,11 @@ app.get("/api/db/sqlmail-monitor", authMiddleware, async (req, res) => {
     const enrichedItems = items.map(item => {
       const processId = item.lastProcessId;
       const targetHints = callerHintsByTarget[item.target] || [];
-      let sqlProcessLabel = processId === null || processId === undefined
-        ? ""
-        : `PID ${processId}`;
-
-      if (!sqlProcessLabel) {
-        if (targetHints.length === 1) {
-          sqlProcessLabel = targetHints[0];
-        } else if (targetHints.length > 1) {
-          sqlProcessLabel = `Posibles: ${targetHints.join(" | ")}`;
-        } else {
-          sqlProcessLabel = "(sin rastro de proceso)";
-        }
-      }
+      const processParts = [];
+      if (processId !== null && processId !== undefined) processParts.push(`PID SQLMail ${processId}`);
+      if (targetHints.length === 1) processParts.push(targetHints[0]);
+      if (targetHints.length > 1) processParts.push(`Posibles objetos: ${targetHints.join(" | ")}`);
+      const sqlProcessLabel = processParts.length ? processParts.join(" · ") : "(sin rastro de proceso)";
 
       return {
         ...item,
