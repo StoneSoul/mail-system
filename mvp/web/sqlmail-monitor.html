@@ -19,7 +19,7 @@
     .kpi{border:1px solid #e5e7eb;border-radius:10px;padding:8px;background:#fafafa}
     .kpi b{display:block;font-size:18px;margin-top:2px}
     .table-wrap{padding:0 16px 16px;overflow:auto}
-    table{border-collapse:collapse;width:100%;min-width:1200px}
+    table{border-collapse:collapse;width:100%;min-width:1300px}
     th,td{padding:8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top}
     th{background:#f3f4f6}
     code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word}
@@ -81,6 +81,7 @@
 
     <div id="errors"></div>
     <div id="kpis" class="kpis"></div>
+    <div id="requesters" class="table-wrap" style="padding-top:0"></div>
     <div id="results" class="table-wrap"></div>
   </div>
 </div>
@@ -160,6 +161,7 @@ function renderRows(rows){
       <td>${item.target.toUpperCase()}</td>
       <td>${item.mailItemId}</td>
       <td>${item.profileName || item.profileId || ""}</td>
+      <td>${item.sendRequestUser || ""}</td>
       <td>${badgeFor(item.sentStatus)}</td>
       <td>${item.recipients || ""}</td>
       <td>${item.copyRecipients || ""}</td>
@@ -179,6 +181,7 @@ function renderRows(rows){
           <th>Origen</th>
           <th>MailItemId</th>
           <th>Perfil</th>
+          <th>Solicitado por (dbo)</th>
           <th>Estado</th>
           <th>To</th>
           <th>CC</th>
@@ -192,6 +195,33 @@ function renderRows(rows){
       </thead>
       <tbody>${body}</tbody>
     </table>
+  `;
+}
+
+function renderRequesters(rows){
+  if(!rows.length){
+    return "";
+  }
+  const items = rows.map(item => `
+    <tr>
+      <td>${item.requester}</td>
+      <td>${Number(item.count || 0).toLocaleString("es-AR")}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <div style="margin-top:8px">
+      <h3 style="margin:0 0 8px 0">Top solicitantes (dbo/usuario)</h3>
+      <table style="min-width:520px">
+        <thead>
+          <tr>
+            <th>Solicitante</th>
+            <th>Cantidad</th>
+          </tr>
+        </thead>
+        <tbody>${items}</tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -216,11 +246,13 @@ async function loadMonitor(){
       : "";
 
     kpis.innerHTML = renderKpis(data.statusSummary || {});
+    requesters.innerHTML = renderRequesters(Array.isArray(data.requesterSummary) ? data.requesterSummary : []);
     results.innerHTML = renderRows(Array.isArray(data.items) ? data.items : []);
   }catch(err){
     summary.textContent = "";
     errorsContainer.innerHTML = `<div class="error-box">No se pudo cargar el monitoreo: ${err.message}</div>`;
     kpis.innerHTML = "";
+    requesters.innerHTML = "";
     results.innerHTML = "";
   }
 }
@@ -247,6 +279,7 @@ async function logout(){
 const summary = document.getElementById("summary");
 const errorsContainer = document.getElementById("errors");
 const kpis = document.getElementById("kpis");
+const requesters = document.getElementById("requesters");
 const results = document.getElementById("results");
 checkAuth();
 </script>

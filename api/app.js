@@ -1103,22 +1103,27 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
     `
       SELECT
         MAX(CASE WHEN c.name = 'reply_to' THEN 1 ELSE 0 END) AS has_reply_to,
-        MAX(CASE WHEN c.name = 'from_address' THEN 1 ELSE 0 END) AS has_from_address
+        MAX(CASE WHEN c.name = 'from_address' THEN 1 ELSE 0 END) AS has_from_address,
+        MAX(CASE WHEN c.name = 'send_request_user' THEN 1 ELSE 0 END) AS has_send_request_user
       FROM msdb.sys.columns c
       WHERE c.object_id = OBJECT_ID('msdb.dbo.sysmail_allitems')
-        AND c.name IN ('reply_to', 'from_address')
+        AND c.name IN ('reply_to', 'from_address', 'send_request_user')
     `,
     [],
     target
   );
   const hasReplyToColumn = Boolean(optionalColumnsRows?.[0]?.has_reply_to);
   const hasFromAddressColumn = Boolean(optionalColumnsRows?.[0]?.has_from_address);
+  const hasSendRequestUserColumn = Boolean(optionalColumnsRows?.[0]?.has_send_request_user);
   const replyToSelectClause = hasReplyToColumn
     ? "ai.reply_to"
     : "CAST(NULL AS NVARCHAR(320)) AS reply_to";
   const fromAddressSelectClause = hasFromAddressColumn
     ? "ai.from_address"
     : "CAST(NULL AS NVARCHAR(320)) AS from_address";
+  const sendRequestUserSelectClause = hasSendRequestUserColumn
+    ? "ai.send_request_user"
+    : "CAST(NULL AS NVARCHAR(320)) AS send_request_user";
 
   const rows = await sqlQuery(
     `
@@ -1133,6 +1138,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.sent_status,
         ${fromAddressSelectClause},
         ${replyToSelectClause},
+        ${sendRequestUserSelectClause},
         ai.importance,
         ai.send_request_date,
         ai.sent_date,
@@ -1171,6 +1177,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
     normalizedStatus: normalizeMailSentStatus(row.sent_status),
     fromAddress: String(row.from_address || ""),
     replyTo: String(row.reply_to || ""),
+    sendRequestUser: String(row.send_request_user || ""),
     importance: String(row.importance || ""),
     sendRequestDate: row.send_request_date || null,
     sentDate: row.sent_date || null,
@@ -1261,12 +1268,24 @@ app.get("/api/db/sqlmail-monitor", authMiddleware, async (req, res) => {
       return acc;
     }, {});
 
+    const requesterSummary = Object.entries(
+      items.reduce((acc, item) => {
+        const key = String(item.sendRequestUser || "").trim() || "(sin dato)";
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+    )
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([requester, count]) => ({ requester, count }));
+
     res.json({
       ok: true,
       targets,
       statusFilter: statusFilter || null,
       totalItems: items.length,
       statusSummary,
+      requesterSummary,
       items,
       errors
     });
