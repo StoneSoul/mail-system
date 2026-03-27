@@ -1171,15 +1171,21 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.sent_date,
         ai.last_mod_date,
         sp.name AS profile_name,
-        ev.last_process_id,
+        proc.last_process_id,
         ev.last_event_type,
         ev.last_event_date,
         ISNULL(ev.last_error, '') AS last_error
       FROM msdb.dbo.sysmail_allitems ai
       LEFT JOIN msdb.dbo.sysmail_profile sp ON ai.profile_id = sp.profile_id
       OUTER APPLY (
+        SELECT TOP (1) el.process_id AS last_process_id
+        FROM msdb.dbo.sysmail_event_log el
+        WHERE el.mailitem_id = ai.mailitem_id
+          AND el.process_id IS NOT NULL
+        ORDER BY el.log_date DESC, el.log_id DESC
+      ) proc
+      OUTER APPLY (
         SELECT TOP (1) el.[description] AS last_error
-             , el.process_id AS last_process_id
              , el.event_type AS last_event_type
              , el.log_date AS last_event_date
         FROM msdb.dbo.sysmail_event_log el
@@ -1281,6 +1287,7 @@ app.get("/api/db/sqlmail-monitor", authMiddleware, async (req, res) => {
 
     const items = [];
     const errors = [];
+    const callerHintsByTarget = {};
     for (const target of targets) {
       try {
         const rows = await fetchSqlMailActivityByTarget(target, { statusFilter, top });
@@ -1289,6 +1296,21 @@ app.get("/api/db/sqlmail-monitor", authMiddleware, async (req, res) => {
         errors.push({
           target,
           error: error?.message || "Error desconocido leyendo msdb.dbo.sysmail_allitems."
+        });
+      }
+
+      try {
+        const scan = await fetchDbMailCallersByTarget(target);
+        callerHintsByTarget[target] = scan.findings
+          .map(item => `${item.database}.${item.schema}.${item.objectName}`)
+          .slice(0, 6);
+        if (Array.isArray(scan.errors) && scan.errors.length > 0) {
+          errors.push(...scan.errors);
+        }
+      } catch (error) {
+        errors.push({
+          target,
+          error: error?.message || "Error desconocido consultando procesos que usan sp_send_dbmail."
         });
       }
     }
@@ -1315,14 +1337,37 @@ app.get("/api/db/sqlmail-monitor", authMiddleware, async (req, res) => {
       .slice(0, 10)
       .map(([requester, count]) => ({ requester, count }));
 
+    const enrichedItems = items.map(item => {
+      const processId = item.lastProcessId;
+      const targetHints = callerHintsByTarget[item.target] || [];
+      let sqlProcessLabel = processId === null || processId === undefined
+        ? ""
+        : `PID ${processId}`;
+
+      if (!sqlProcessLabel) {
+        if (targetHints.length === 1) {
+          sqlProcessLabel = targetHints[0];
+        } else if (targetHints.length > 1) {
+          sqlProcessLabel = `Posibles: ${targetHints.join(" | ")}`;
+        } else {
+          sqlProcessLabel = "(sin rastro de proceso)";
+        }
+      }
+
+      return {
+        ...item,
+        sqlProcessLabel
+      };
+    });
+
     res.json({
       ok: true,
       targets,
       statusFilter: statusFilter || null,
-      totalItems: items.length,
+      totalItems: enrichedItems.length,
       statusSummary,
       requesterSummary,
-      items,
+      items: enrichedItems,
       errors
     });
   } catch (e) {
