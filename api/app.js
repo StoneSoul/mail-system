@@ -239,9 +239,21 @@ async function fetchRemoteProducers(target) {
       `
         SELECT
           p.name AS procName,
-          s.name AS schemaName
+          s.name AS schemaName,
+          CASE
+            WHEN LOWER(p.name) LIKE '%mail%'
+              OR LOWER(ISNULL(sm.definition, '')) LIKE '%sp_send_dbmail%'
+              OR LOWER(ISNULL(sm.definition, '')) LIKE '%sysmail_%'
+              OR LOWER(ISNULL(sm.definition, '')) LIKE '%mailqueue%'
+              OR LOWER(ISNULL(sm.definition, '')) LIKE '%@recipients%'
+              OR LOWER(ISNULL(sm.definition, '')) LIKE '%@copy_recipients%'
+              OR LOWER(ISNULL(sm.definition, '')) LIKE '%@blind_copy_recipients%'
+            THEN 1
+            ELSE 0
+          END AS isMailRelated
         FROM [${databaseName}].sys.procedures p
         INNER JOIN [${databaseName}].sys.schemas s ON s.schema_id = p.schema_id
+        LEFT JOIN [${databaseName}].sys.sql_modules sm ON sm.object_id = p.object_id
         WHERE p.is_ms_shipped = 0
           AND s.name = 'dbo'
         ORDER BY p.name
@@ -259,7 +271,8 @@ async function fetchRemoteProducers(target) {
       procName,
       sourceDb: sourceDb || null,
       label: `${procName} (${target.toUpperCase()} / ${sourceDb || "N/A"})`,
-      description: `SP dbo detectado automáticamente en ${target} - ${sourceDb || "N/A"}.`
+      description: `SP dbo detectado automáticamente en ${target} - ${sourceDb || "N/A"}.`,
+      isMailRelated: Number(row.isMailRelated) === 1
     };
   });
 }
@@ -287,10 +300,24 @@ async function getAvailableProducersForTarget(target) {
         procName: normalizedProc,
         sourceDb: normalizedSourceDb || null
       });
+      continue;
+    }
+
+    const existing = unique.get(key);
+    if (existing && producer?.isMailRelated === true) {
+      existing.isMailRelated = true;
+      unique.set(key, existing);
     }
   }
 
   return Array.from(unique.values()).sort((a, b) => a.procName.localeCompare(b.procName));
+}
+
+function shouldShowProducerByDefault(producer) {
+  if (typeof producer?.isMailRelated === "boolean") {
+    return producer.isMailRelated;
+  }
+  return true;
 }
 
 async function ensureRemoteVisibilityTable() {
@@ -332,7 +359,7 @@ function visibilityKey(target, sourceDb, procName) {
 
 async function applyVisibilityFilter(target, producers) {
   const visibilityRows = await getVisibilityRowsForTarget(target);
-  if (!visibilityRows.length) return producers;
+  if (!visibilityRows.length) return producers.filter(shouldShowProducerByDefault);
 
   const rules = new Map();
   for (const row of visibilityRows) {
@@ -342,7 +369,7 @@ async function applyVisibilityFilter(target, producers) {
 
   return producers.filter(producer => {
     const key = visibilityKey(target, producer.sourceDb, producer.procName);
-    if (!rules.has(key)) return true;
+    if (!rules.has(key)) return shouldShowProducerByDefault(producer);
     return rules.get(key);
   });
 }
@@ -1011,7 +1038,7 @@ app.get("/api/db/remote-objects", authMiddleware, async (req, res) => {
         sourceDb,
         label: producer.label,
         description: producer.description,
-        visibleInFullboard: visibilityMap.has(key) ? visibilityMap.get(key) : true
+        visibleInFullboard: visibilityMap.has(key) ? visibilityMap.get(key) : shouldShowProducerByDefault(producer)
       });
     }
 
