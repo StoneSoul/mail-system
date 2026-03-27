@@ -23,6 +23,7 @@ app.use(express.json());
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
+const remoteObjectsPath = path.resolve(__dirname, "../mvp/web/remote-objects.html");
 
 function normalizeCredential(rawValue, fallback) {
   const source = rawValue ?? fallback;
@@ -289,6 +290,60 @@ async function getAvailableProducersForTarget(target) {
   return Array.from(unique.values()).sort((a, b) => a.procName.localeCompare(b.procName));
 }
 
+async function ensureRemoteVisibilityTable() {
+  await sqlQuery(`
+    IF OBJECT_ID(N'dbo.MailRemoteProcedureVisibility', N'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.MailRemoteProcedureVisibility (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        Target NVARCHAR(20) NOT NULL,
+        SourceDb NVARCHAR(128) NULL,
+        ProcName NVARCHAR(128) NOT NULL,
+        IsVisible BIT NOT NULL CONSTRAINT DF_MailRemoteProcedureVisibility_IsVisible DEFAULT (1),
+        UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_MailRemoteProcedureVisibility_UpdatedAt DEFAULT (SYSUTCDATETIME()),
+        UpdatedBy NVARCHAR(200) NULL
+      );
+      CREATE UNIQUE INDEX UX_MailRemoteProcedureVisibility
+        ON dbo.MailRemoteProcedureVisibility(Target, SourceDb, ProcName);
+    END
+  `);
+}
+
+async function getVisibilityRowsForTarget(target) {
+  await ensureRemoteVisibilityTable();
+  return sqlQuery(
+    `
+      SELECT Target, SourceDb, ProcName, IsVisible
+      FROM dbo.MailRemoteProcedureVisibility
+      WHERE Target = @target
+    `,
+    [{ name: "target", type: sql.NVarChar(20), value: target }]
+  );
+}
+
+function visibilityKey(target, sourceDb, procName) {
+  const db = sanitizeSqlIdentifier(sourceDb) || "";
+  const proc = normalizeProcName(procName);
+  return `${target.toLowerCase()}::${db.toLowerCase()}::${proc.toLowerCase()}`;
+}
+
+async function applyVisibilityFilter(target, producers) {
+  const visibilityRows = await getVisibilityRowsForTarget(target);
+  if (!visibilityRows.length) return producers;
+
+  const rules = new Map();
+  for (const row of visibilityRows) {
+    const key = visibilityKey(row.Target, row.SourceDb, row.ProcName);
+    rules.set(key, Number(row.IsVisible) === 1);
+  }
+
+  return producers.filter(producer => {
+    const key = visibilityKey(target, producer.sourceDb, producer.procName);
+    if (!rules.has(key)) return true;
+    return rules.get(key);
+  });
+}
+
 async function remoteProcedureExists(target, procName) {
   const normalized = normalizeProcName(procName);
   if (!normalized) return false;
@@ -519,6 +574,10 @@ app.use("/admin/queues", authMiddleware, serverAdapter.getRouter());
 // ------------------------
 app.get("/", (_req, res) => {
   res.sendFile(panelPath);
+});
+
+app.get("/remote-objects", authMiddleware, (_req, res) => {
+  res.sendFile(remoteObjectsPath);
 });
 
 app.get("/favicon.ico", (_req, res) => {
@@ -878,9 +937,9 @@ async function getProducersHandler(req, res) {
   try {
     const target = req.query?.target ? resolveRemoteTarget(req.query.target) : null;
     const producersByTarget = {
-      prod: await getAvailableProducersForTarget("prod"),
-      test: await getAvailableProducersForTarget("test"),
-      express: await getAvailableProducersForTarget("express")
+      prod: await applyVisibilityFilter("prod", await getAvailableProducersForTarget("prod")),
+      test: await applyVisibilityFilter("test", await getAvailableProducersForTarget("test")),
+      express: await applyVisibilityFilter("express", await getAvailableProducersForTarget("express"))
     };
 
     res.json({
@@ -896,6 +955,84 @@ async function getProducersHandler(req, res) {
 
 app.get("/api/actions/producers", authMiddleware, getProducersHandler);
 app.get("/actions/producers", authMiddleware, getProducersHandler);
+
+app.get("/api/db/remote-objects", authMiddleware, async (req, res) => {
+  try {
+    const target = resolveRemoteTarget(req.query?.target || "prod");
+    const producers = await getAvailableProducersForTarget(target);
+    const visibilityRows = await getVisibilityRowsForTarget(target);
+    const visibilityMap = new Map();
+    for (const row of visibilityRows) {
+      visibilityMap.set(visibilityKey(target, row.SourceDb, row.ProcName), Number(row.IsVisible) === 1);
+    }
+
+    const groupedByDatabase = {};
+    for (const producer of producers) {
+      const sourceDb = sanitizeSqlIdentifier(producer.sourceDb) || "(sin_base)";
+      if (!groupedByDatabase[sourceDb]) groupedByDatabase[sourceDb] = [];
+      const key = visibilityKey(target, sourceDb, producer.procName);
+      groupedByDatabase[sourceDb].push({
+        procName: producer.procName,
+        sourceDb,
+        label: producer.label,
+        description: producer.description,
+        visibleInFullboard: visibilityMap.has(key) ? visibilityMap.get(key) : true
+      });
+    }
+
+    Object.keys(groupedByDatabase).forEach(db => {
+      groupedByDatabase[db].sort((a, b) => a.procName.localeCompare(b.procName));
+    });
+
+    res.json({
+      ok: true,
+      target,
+      availableDatabases: Object.keys(groupedByDatabase).sort((a, b) => a.localeCompare(b)),
+      objectsByDatabase: groupedByDatabase
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/db/remote-objects/selection", authMiddleware, async (req, res) => {
+  try {
+    const target = resolveRemoteTarget(req.body?.target || "prod");
+    const selected = Array.isArray(req.body?.selectedObjects) ? req.body.selectedObjects : [];
+    const normalizedSelected = selected
+      .map(item => ({
+        sourceDb: sanitizeSqlIdentifier(item?.sourceDb),
+        procName: normalizeProcName(item?.procName)
+      }))
+      .filter(item => item.sourceDb && item.procName);
+
+    await ensureRemoteVisibilityTable();
+    await sqlQuery(
+      `DELETE FROM dbo.MailRemoteProcedureVisibility
+       WHERE Target = @target`,
+      [{ name: "target", type: sql.NVarChar(20), value: target }]
+    );
+
+    for (const item of normalizedSelected) {
+      await sqlQuery(
+        `
+          INSERT INTO dbo.MailRemoteProcedureVisibility(Target, SourceDb, ProcName, IsVisible, UpdatedBy)
+          VALUES(@target, @sourceDb, @procName, 1, @updatedBy)
+        `,
+        [
+          { name: "target", type: sql.NVarChar(20), value: target },
+          { name: "sourceDb", type: sql.NVarChar(128), value: item.sourceDb },
+          { name: "procName", type: sql.NVarChar(128), value: item.procName },
+          { name: "updatedBy", type: sql.NVarChar(200), value: req.session?.username || "panel" }
+        ]
+      );
+    }
+
+    res.json({ ok: true, target, selectedCount: normalizedSelected.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
   try {
