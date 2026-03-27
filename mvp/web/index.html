@@ -121,8 +121,9 @@
             <h3 class="settings-title">Parámetros y configuración</h3>
             <div class="settings-section">
               <div class="settings-actions">
-                <button type="button" onclick="openRemoteObjects()">Seleccionar dbo visibles</button>
-                <button type="button" onclick="loadDbInsights()">Revisar tablas MailDB</button>
+                <button type="button" onclick="openRemoteObjects()">Visibilidad de SP (dbo)</button>
+                <button type="button" onclick="openDbMailCallers()">Relevamiento de sp_send_dbmail</button>
+                <button type="button" onclick="openMailDbInsights()">Revisar tablas MailDB</button>
               </div>
             </div>
             <div class="settings-section">
@@ -295,6 +296,14 @@ async function doLogout(){
 
 function openRemoteObjects(){
   window.location.href = `${API_ROOT}/remote-objects`;
+}
+
+function openDbMailCallers(){
+  window.location.href = `${API_ROOT}/dbmail-callers`;
+}
+
+function openMailDbInsights(){
+  window.location.href = `${API_ROOT}/maildb-insights`;
 }
 
 async function loadMetrics(){
@@ -625,42 +634,6 @@ async function runProducer(producer){
 function fmtCount(value){
   if(value === null || value === undefined) return "N/D";
   return Number(value).toLocaleString("es-AR");
-}
-
-async function loadDbInsights(){
-  await runAction("diagnóstico de tablas", async () => {
-    const tableData = await tryGet([
-      `${API}/db/tables`,
-      "/db/tables"
-    ]);
-    const columnData = await tryGet([
-      `${API}/queue/columns`,
-      "/queue/columns"
-    ]);
-
-    if (!tableData || !columnData) {
-      throw new Error("No se encontró el endpoint de diagnóstico (/api/db/tables o /api/queue/columns).");
-    }
-    const lines = [];
-    lines.push(`<strong>Tabla principal de envíos:</strong> ${tableData.queueSourceTable}`);
-    lines.push(`<div class='small'>El panel lee la cola desde una única tabla lógica. Si ves varios objetos, el resto son tablas de sistema o auditoría.</div>`);
-    lines.push("<hr/>");
-    lines.push("<strong>Tablas detectadas:</strong>");
-    lines.push("<ul>");
-    for(const tbl of (tableData.tables || [])){
-      lines.push(`<li><strong>${tbl.tableName}</strong> — ${tbl.exists ? "Existe" : "No existe"} — Registros: ${fmtCount(tbl.rowCount)} — Rol: ${tbl.role}</li>`);
-    }
-    lines.push("</ul>");
-    lines.push("<strong>Mapeo de columnas visibles:</strong>");
-    lines.push("<ul>");
-    Object.entries(columnData.mapping || {}).forEach(([key, value]) => {
-      lines.push(`<li>${key}: <code>${value}</code></li>`);
-    });
-    lines.push("</ul>");
-    dbInfo.innerHTML = lines.join("");
-    dbInfo.classList.remove("hidden");
-    feedback.textContent = "Diagnóstico de MailDB actualizado.";
-  });
 }
 
 async function tryGet(urls){

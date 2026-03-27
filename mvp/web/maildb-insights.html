@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Revisión de tablas MailDB</title>
+  <style>
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fb;color:#111827}
+    .shell{max-width:1100px;margin:22px auto;padding:0 16px}
+    .card{background:#fff;border:1px solid #dbe3ef;border-radius:14px}
+    .head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #e5e7eb}
+    .controls{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
+    button{border:1px solid #cdd6e2;background:#fff;padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+    .muted{font-size:12px;color:#6b7280}
+    .small{font-size:12px;color:#6b7280}
+    .hidden{display:none}
+    .content{padding:16px}
+    .panel{border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bottom:12px;background:#fafafa}
+    table{border-collapse:collapse;width:100%}
+    th,td{padding:8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top}
+    th{background:#f3f4f6}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}
+    .error-box{margin:12px 16px;padding:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:10px;color:#991b1b}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div id="loginHint" class="card hidden" style="padding:16px">
+    <p>Tu sesión expiró. Volvé al panel principal para iniciar sesión.</p>
+    <a href="/">Ir al login</a>
+  </div>
+
+  <div id="main" class="card hidden">
+    <div class="head">
+      <div>
+        <h2 style="margin:0">Revisión de tablas MailDB</h2>
+        <p class="muted" style="margin:4px 0 0">Vista dedicada para el inventario técnico de tablas y mapeos de la cola.</p>
+      </div>
+      <div>
+        <a href="/" style="margin-right:8px">← Volver al Fullboard</a>
+        <button onclick="logout()">Cerrar sesión</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="primary" onclick="loadInsights()">Actualizar diagnóstico</button>
+      <span id="summary" class="muted"></span>
+    </div>
+
+    <div id="errors"></div>
+    <div id="results" class="content"></div>
+  </div>
+</div>
+
+<script>
+const API_ROOT = (() => {
+  if (window.__MAIL_API_ROOT__) return String(window.__MAIL_API_ROOT__).replace(/\/$/, "");
+  return "http://localhost:3000";
+})();
+const API = `${API_ROOT}/api`;
+const AUTH = `${API_ROOT}/auth`;
+
+async function j(url,opt){
+  const r=await fetch(url,{credentials:"include",...(opt||{})});
+  if(r.status===401){
+    showLoginHint();
+    throw new Error("No autorizado");
+  }
+  const payload = await r.json().catch(() => ({}));
+  if(!r.ok){
+    throw new Error(payload?.error || `Error HTTP ${r.status}`);
+  }
+  return payload;
+}
+
+function showMain(){
+  main.classList.remove("hidden");
+  loginHint.classList.add("hidden");
+}
+
+function showLoginHint(){
+  loginHint.classList.remove("hidden");
+  main.classList.add("hidden");
+}
+
+function fmtCount(value){
+  if(value === null || value === undefined) return "N/D";
+  return Number(value).toLocaleString("es-AR");
+}
+
+async function tryGet(urls){
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      return await j(url);
+    } catch (err) {
+      lastError = err;
+      if (!String(err.message || "").includes("404")) {
+        throw err;
+      }
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
+
+function renderInsights(tableData, columnData){
+  const tableRows = (tableData.tables || []).map(tbl => `
+    <tr>
+      <td>${tbl.tableName}</td>
+      <td>${tbl.exists ? "Existe" : "No existe"}</td>
+      <td>${fmtCount(tbl.rowCount)}</td>
+      <td>${tbl.role}</td>
+    </tr>
+  `).join("");
+
+  const mappingRows = Object.entries(columnData.mapping || {}).map(([key, value]) => `
+    <tr>
+      <td>${key}</td>
+      <td><code>${value}</code></td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="panel">
+      <strong>Tabla principal de envíos:</strong> ${tableData.queueSourceTable}
+      <div class="small">La API opera contra una única tabla lógica para la cola.</div>
+    </div>
+    <div class="panel">
+      <strong>Tablas detectadas</strong>
+      <table>
+        <thead><tr><th>Tabla</th><th>Estado</th><th>Registros</th><th>Rol</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <strong>Mapeo de columnas visibles</strong>
+      <table>
+        <thead><tr><th>Campo lógico</th><th>Columna/expresión</th></tr></thead>
+        <tbody>${mappingRows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadInsights(){
+  try{
+    const tableData = await tryGet([
+      `${API}/db/tables`,
+      "/db/tables"
+    ]);
+    const columnData = await tryGet([
+      `${API}/queue/columns`,
+      "/queue/columns"
+    ]);
+
+    if (!tableData || !columnData) {
+      throw new Error("No se encontró el endpoint de diagnóstico (/api/db/tables o /api/queue/columns).");
+    }
+
+    summary.textContent = "Diagnóstico actualizado correctamente.";
+    errors.innerHTML = "";
+    results.innerHTML = renderInsights(tableData, columnData);
+  }catch(err){
+    summary.textContent = "";
+    errors.innerHTML = `<div class="error-box">No se pudo cargar el diagnóstico: ${err.message}</div>`;
+    results.innerHTML = "";
+  }
+}
+
+async function checkAuth(){
+  try{
+    const status = await j(`${AUTH}/status`);
+    if(!status.loggedIn){
+      showLoginHint();
+      return;
+    }
+    showMain();
+    await loadInsights();
+  }catch(_){
+    showLoginHint();
+  }
+}
+
+async function logout(){
+  try{ await j(`${AUTH}/logout`, {method:"POST"}); } catch(_err) {}
+  location.href = "/";
+}
+
+const summary = document.getElementById("summary");
+const errors = document.getElementById("errors");
+const results = document.getElementById("results");
+checkAuth();
+</script>
+</body>
+</html>
