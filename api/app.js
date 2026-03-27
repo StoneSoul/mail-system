@@ -1099,25 +1099,26 @@ function normalizeMailSentStatus(value) {
 
 async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
   const statusClause = statusFilter ? "AND ai.sent_status = @statusFilter" : "";
-  const replyToColumnRows = await sqlQuery(
+  const optionalColumnsRows = await sqlQuery(
     `
-      SELECT CASE
-        WHEN EXISTS (
-          SELECT 1
-          FROM msdb.sys.columns c
-          WHERE c.object_id = OBJECT_ID('msdb.dbo.sysmail_allitems')
-            AND c.name = 'reply_to'
-        ) THEN 1
-        ELSE 0
-      END AS has_reply_to
+      SELECT
+        MAX(CASE WHEN c.name = 'reply_to' THEN 1 ELSE 0 END) AS has_reply_to,
+        MAX(CASE WHEN c.name = 'from_address' THEN 1 ELSE 0 END) AS has_from_address
+      FROM msdb.sys.columns c
+      WHERE c.object_id = OBJECT_ID('msdb.dbo.sysmail_allitems')
+        AND c.name IN ('reply_to', 'from_address')
     `,
     [],
     target
   );
-  const hasReplyToColumn = Boolean(replyToColumnRows?.[0]?.has_reply_to);
+  const hasReplyToColumn = Boolean(optionalColumnsRows?.[0]?.has_reply_to);
+  const hasFromAddressColumn = Boolean(optionalColumnsRows?.[0]?.has_from_address);
   const replyToSelectClause = hasReplyToColumn
     ? "ai.reply_to"
     : "CAST(NULL AS NVARCHAR(320)) AS reply_to";
+  const fromAddressSelectClause = hasFromAddressColumn
+    ? "ai.from_address"
+    : "CAST(NULL AS NVARCHAR(320)) AS from_address";
 
   const rows = await sqlQuery(
     `
@@ -1130,7 +1131,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.[subject],
         ai.body_format,
         ai.sent_status,
-        ai.from_address,
+        ${fromAddressSelectClause},
         ${replyToSelectClause},
         ai.importance,
         ai.send_request_date,
