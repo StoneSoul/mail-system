@@ -841,10 +841,30 @@ app.get("/api/queue/columns", authMiddleware, async (_req, res) => {
 });
 
 app.get("/api/db/context", authMiddleware, (_req, res) => {
+  const dbTargets = getDbTargetsSummary();
+  const remoteDatabases = getRemoteDatabasesByTarget();
+
   res.json({
     ok: true,
-    dbTargets: getDbTargetsSummary(),
-    note: "La cola, mapeo y monitoreo salen de MailDB local (SQL Express)."
+    dbTargets,
+    topology: {
+      relay: {
+        server: dbTargets.local.server,
+        database: dbTargets.local.database,
+        role: "SQL Express en el mismo servidor del servicio (sin archivos .mdf locales en el proyecto)."
+      },
+      remoteReadTargets: {
+        prod: {
+          server: dbTargets.prod.server,
+          databases: remoteDatabases.prod
+        },
+        test: {
+          server: dbTargets.test.server,
+          databases: remoteDatabases.test
+        }
+      }
+    },
+    note: "La cola, mapeo y monitoreo salen de MailDB en SQL Express; los SP dbo se consultan en catálogos remotos configurados por entorno."
   });
 });
 

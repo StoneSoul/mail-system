@@ -146,3 +146,28 @@ Si solo quieres “reenviar” y no dejar cola persistente, en `IMC` podrías ej
 ---
 
 Si quieres, en un siguiente paso te paso el `ALTER PROCEDURE [dbo].[SP_ENVIOMAILPERSONAL]` completo ya reescrito para tu esquema real (`Linked Server`, nombre de DB, y política de reintentos).
+
+## 7) Topología recomendada para este proyecto
+
+Para evitar confusiones con bases locales dentro de carpetas del repo:
+
+- El servicio Node **no usa archivos `.mdf/.ldf` en el proyecto**.
+- La base de cola local del servicio debe ser `MailDB` en el SQL Express del mismo host del servicio (ej.: `SRV-EnviosMail` / `192.168.14.4`).
+- Los objetos `dbo` remotos deben consultarse por catálogo en servidores externos, por ejemplo:
+  - Producción (`DTTPROD` / `192.168.16.31`): `IMC`, `IMC_DATOS`.
+  - Prueba (`DTTPRUEBA` / `192.168.16.19`): `IMC`, `IMC_DATOS`, `IMC_PRUEBA`, `IMC_PRUEBAIT`.
+
+Variables sugeridas en `.env` para dejarlo explícito:
+
+```env
+DB_SERVER=192.168.14.4
+DB_NAME=MailDB
+
+PROD_DB_SERVER=192.168.16.31
+PROD_DB_NAME=IMC
+PROD_DB_CATALOG=IMC,IMC_DATOS
+
+TEST_DB_SERVER=192.168.16.19
+TEST_DB_NAME=IMC_PRUEBAIT
+TEST_DB_CATALOG=IMC,IMC_DATOS,IMC_PRUEBA,IMC_PRUEBAIT
+```
