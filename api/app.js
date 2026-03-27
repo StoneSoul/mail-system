@@ -128,10 +128,25 @@ const DEFAULT_PRODUCERS_BY_TARGET = {
   ]
 };
 
+const DEFAULT_REMOTE_DATABASES_BY_TARGET = {
+  prod: ["IMC", "IMC_DATOS"],
+  test: ["IMC", "IMC_DATOS", "IMC_PRUEBA", "IMC_PRUEBAIT"],
+  express: []
+};
+
 const REMOTE_DB_TARGETS = new Set(["prod", "test", "express"]);
 
 function resolveRemoteTarget(rawTarget) {
-  const normalized = String(rawTarget || "prod").toLowerCase();
+  const aliases = {
+    dttprod: "prod",
+    produccion: "prod",
+    production: "prod",
+    dttprueba: "test",
+    prueba: "test",
+    testing: "test",
+    qa: "test"
+  };
+  const normalized = aliases[String(rawTarget || "prod").toLowerCase()] || String(rawTarget || "prod").toLowerCase();
   if (!REMOTE_DB_TARGETS.has(normalized)) {
     throw new Error(`Target inválido: ${rawTarget}. Usá 'prod', 'test' o 'express'.`);
   }
@@ -154,6 +169,32 @@ function parseProducerList(rawList, target) {
       label: `${procName} (${targetLabelByCode[target] || target})`,
       description: `SP configurado para ${targetLabelByCode[target] || target}.`
     }));
+}
+
+function parseDatabaseList(rawList) {
+  return String(rawList || "")
+    .split(",")
+    .map(db => db.trim())
+    .filter(Boolean);
+}
+
+function sanitizeSqlIdentifier(identifier) {
+  const value = String(identifier || "").trim();
+  if (!value) return null;
+  if (!/^[A-Za-z0-9_]+$/.test(value)) return null;
+  return value;
+}
+
+function getRemoteDatabasesByTarget() {
+  const prodFromEnv = parseDatabaseList(process.env.PROD_DB_CATALOG || process.env.PROD_DB_DATABASES);
+  const testFromEnv = parseDatabaseList(process.env.TEST_DB_CATALOG || process.env.TEST_DB_DATABASES);
+  const expressFromEnv = parseDatabaseList(process.env.EXPRESS_DB_CATALOG || process.env.EXPRESS_DB_DATABASES);
+
+  return {
+    prod: prodFromEnv.length ? prodFromEnv : DEFAULT_REMOTE_DATABASES_BY_TARGET.prod,
+    test: testFromEnv.length ? testFromEnv : DEFAULT_REMOTE_DATABASES_BY_TARGET.test,
+    express: expressFromEnv.length ? expressFromEnv : DEFAULT_REMOTE_DATABASES_BY_TARGET.express
+  };
 }
 
 function getAvailableProducersByTarget() {
@@ -184,27 +225,37 @@ function normalizeProcName(procName = "") {
 }
 
 async function fetchRemoteProducers(target) {
-  const rows = await sqlQuery(
-    `
-      SELECT
-        p.name AS procName,
-        s.name AS schemaName
-      FROM sys.procedures p
-      INNER JOIN sys.schemas s ON s.schema_id = p.schema_id
-      WHERE p.is_ms_shipped = 0
-        AND s.name = 'dbo'
-      ORDER BY p.name
-    `,
-    [],
-    target
-  );
+  const databasesByTarget = getRemoteDatabasesByTarget();
+  const databaseList = (databasesByTarget[target] || []).map(sanitizeSqlIdentifier).filter(Boolean);
+  if (!databaseList.length) return [];
 
-  return rows.map(row => {
+  const allRows = [];
+  for (const databaseName of databaseList) {
+    const rows = await sqlQuery(
+      `
+        SELECT
+          p.name AS procName,
+          s.name AS schemaName
+        FROM [${databaseName}].sys.procedures p
+        INNER JOIN [${databaseName}].sys.schemas s ON s.schema_id = p.schema_id
+        WHERE p.is_ms_shipped = 0
+          AND s.name = 'dbo'
+        ORDER BY p.name
+      `,
+      [],
+      target
+    );
+    allRows.push(...rows.map(row => ({ ...row, sourceDb: databaseName })));
+  }
+
+  return allRows.map(row => {
     const procName = String(row.procName);
+    const sourceDb = sanitizeSqlIdentifier(row.sourceDb);
     return {
       procName,
-      label: `${procName} (${target.toUpperCase()})`,
-      description: `SP detectado automáticamente en ${target}.`
+      sourceDb: sourceDb || null,
+      label: `${procName} (${target.toUpperCase()} / ${sourceDb || "N/A"})`,
+      description: `SP dbo detectado automáticamente en ${target} - ${sourceDb || "N/A"}.`
     };
   });
 }
@@ -222,12 +273,15 @@ async function getAvailableProducersForTarget(target) {
   const merged = [...configured, ...remote];
   const unique = new Map();
   for (const producer of merged) {
-    const key = normalizeProcName(producer.procName).toLowerCase();
+    const normalizedProc = normalizeProcName(producer.procName);
+    const normalizedSourceDb = sanitizeSqlIdentifier(producer.sourceDb) || "";
+    const key = `${normalizedProc.toLowerCase()}::${normalizedSourceDb.toLowerCase()}`;
     if (!key) continue;
     if (!unique.has(key)) {
       unique.set(key, {
         ...producer,
-        procName: normalizeProcName(producer.procName)
+        procName: normalizedProc,
+        sourceDb: normalizedSourceDb || null
       });
     }
   }
@@ -244,6 +298,27 @@ async function remoteProcedureExists(target, procName) {
       SELECT TOP 1 1 AS ok
       FROM sys.procedures p
       INNER JOIN sys.schemas s ON s.schema_id = p.schema_id
+      WHERE p.is_ms_shipped = 0
+        AND s.name = 'dbo'
+        AND LOWER(p.name) = LOWER(@procName)
+    `,
+    [{ name: "procName", type: sql.NVarChar(128), value: normalized }],
+    target
+  );
+
+  return rows.length > 0;
+}
+
+async function remoteProcedureExistsInDatabase(target, sourceDb, procName) {
+  const normalized = normalizeProcName(procName);
+  const databaseName = sanitizeSqlIdentifier(sourceDb);
+  if (!normalized || !databaseName) return false;
+
+  const rows = await sqlQuery(
+    `
+      SELECT TOP 1 1 AS ok
+      FROM [${databaseName}].sys.procedures p
+      INNER JOIN [${databaseName}].sys.schemas s ON s.schema_id = p.schema_id
       WHERE p.is_ms_shipped = 0
         AND s.name = 'dbo'
         AND LOWER(p.name) = LOWER(@procName)
@@ -799,7 +874,7 @@ app.get("/api/db/tables", authMiddleware, async (_req, res) => {
   }
 });
 
-app.get("/api/actions/producers", authMiddleware, async (req, res) => {
+async function getProducersHandler(req, res) {
   try {
     const target = req.query?.target ? resolveRemoteTarget(req.query.target) : null;
     const producersByTarget = {
@@ -811,12 +886,16 @@ app.get("/api/actions/producers", authMiddleware, async (req, res) => {
     res.json({
       ok: true,
       producers: target ? producersByTarget[target] : [...producersByTarget.prod, ...producersByTarget.test, ...producersByTarget.express],
-      producersByTarget
+      producersByTarget,
+      availableDatabasesByTarget: getRemoteDatabasesByTarget()
     });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
-});
+}
+
+app.get("/api/actions/producers", authMiddleware, getProducersHandler);
+app.get("/actions/producers", authMiddleware, getProducersHandler);
 
 app.post("/api/actions/run-sender", authMiddleware, async (req, res) => {
   try {
@@ -882,23 +961,32 @@ app.post("/api/actions/requeue-failed", authMiddleware, async (req, res) => {
 
 app.post("/api/actions/run-producer", authMiddleware, async (req, res) => {
   try {
-    const { procName, user = "web", target = "prod" } = req.body || {};
+    const { procName, user = "web", target = "prod", sourceDb = null } = req.body || {};
     const remoteTarget = resolveRemoteTarget(target);
+    const normalizedSourceDb = sanitizeSqlIdentifier(sourceDb);
     const normalizedProcName = normalizeProcName(procName);
     if (!normalizedProcName) {
       return res.status(400).json({ error: "Debes indicar procName." });
     }
 
-    const exists = await remoteProcedureExists(remoteTarget, normalizedProcName);
+    const exists = normalizedSourceDb
+      ? await remoteProcedureExistsInDatabase(remoteTarget, normalizedSourceDb, normalizedProcName)
+      : await remoteProcedureExists(remoteTarget, normalizedProcName);
     if (!exists) {
-      return res.status(400).json({ error: `SP no encontrada en '${remoteTarget}': ${normalizedProcName}` });
+      const dbSuffix = normalizedSourceDb ? `/${normalizedSourceDb}` : "";
+      return res.status(400).json({ error: `SP no encontrada en '${remoteTarget}${dbSuffix}': ${normalizedProcName}` });
     }
 
-    await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
-      { name: "ProcName", type: sql.NVarChar(128), value: normalizedProcName },
-      { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
-    ], remoteTarget);
-    res.json({ ok: true, target: remoteTarget });
+    if (normalizedSourceDb) {
+      await sqlQuery(`EXEC [${normalizedSourceDb}].[dbo].[${normalizedProcName}]`, [], remoteTarget);
+    } else {
+      await executeProcedure("dbo.SP_ADMIN_RUN_PRODUCER", [
+        { name: "ProcName", type: sql.NVarChar(128), value: normalizedProcName },
+        { name: "ExecutedBy", type: sql.NVarChar(200), value: user }
+      ], remoteTarget);
+    }
+
+    res.json({ ok: true, target: remoteTarget, procName: normalizedProcName, sourceDb: normalizedSourceDb });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
