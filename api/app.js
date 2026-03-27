@@ -1099,6 +1099,26 @@ function normalizeMailSentStatus(value) {
 
 async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
   const statusClause = statusFilter ? "AND ai.sent_status = @statusFilter" : "";
+  const replyToColumnRows = await sqlQuery(
+    `
+      SELECT CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM msdb.sys.columns c
+          WHERE c.object_id = OBJECT_ID('msdb.dbo.sysmail_allitems')
+            AND c.name = 'reply_to'
+        ) THEN 1
+        ELSE 0
+      END AS has_reply_to
+    `,
+    [],
+    target
+  );
+  const hasReplyToColumn = Boolean(replyToColumnRows?.[0]?.has_reply_to);
+  const replyToSelectClause = hasReplyToColumn
+    ? "ai.reply_to"
+    : "CAST(NULL AS NVARCHAR(320)) AS reply_to";
+
   const rows = await sqlQuery(
     `
       SELECT TOP (${top})
@@ -1111,7 +1131,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.body_format,
         ai.sent_status,
         ai.from_address,
-        ai.reply_to,
+        ${replyToSelectClause},
         ai.importance,
         ai.send_request_date,
         ai.sent_date,
