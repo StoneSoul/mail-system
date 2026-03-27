@@ -73,52 +73,56 @@ export default function App() {
 
   if (checkingAuth) {
     return (
-      <div style={{ maxWidth: 420, margin: "40px auto", fontFamily: "Arial" }}>
-        <h1>Mail System - Login</h1>
-        <p>Verificando sesión…</p>
-      </div>
+      <main className="auth-shell">
+        <section className="auth-card">
+          <h1>Mail System - Login</h1>
+          <p>Verificando sesión…</p>
+        </section>
+      </main>
     );
   }
 
   if (!authed) {
     return (
-      <div style={{ maxWidth: 420, margin: "40px auto", fontFamily: "Arial" }}>
-        <h1>Mail System - Login</h1>
-        <form onSubmit={handleLogin}>
-          <div style={{ marginBottom: 12 }}>
-            <label>Usuario</label>
-            <input
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              style={{ width: "100%", padding: 8 }}
-              required
-            />
-          </div>
-          <div style={{ marginBottom: 12 }}>
-            <label>Clave</label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              style={{ width: "100%", padding: 8 }}
-              required
-            />
-          </div>
-          {error && <p style={{ color: "red" }}>{error}</p>}
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Ingresando..." : "Ingresar"}
-          </button>
-        </form>
-      </div>
+      <main className="auth-shell">
+        <section className="auth-card">
+          <h1>Mail System - Login</h1>
+          <form onSubmit={handleLogin} className="auth-form">
+            <div>
+              <label htmlFor="username">Usuario</label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="password">Clave</label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            {error && <p className="error-text">{error}</p>}
+            <button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "Ingresando..." : "Ingresar"}
+            </button>
+          </form>
+        </section>
+      </main>
     );
   }
 
   return (
-    <div style={{ fontFamily: "Arial", padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <main className="page-shell">
+      <header className="page-header">
         <h1>Mail System Dashboard</h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
+        <div className="header-actions">
           <button
             onClick={() => setShowSettings(prev => !prev)}
             aria-haspopup="true"
@@ -127,49 +131,32 @@ export default function App() {
             ⚙️ Ajustes
           </button>
           {showSettings && (
-            <div
-              style={{
-                position: "absolute",
-                right: 86,
-                top: 38,
-                minWidth: 260,
-                border: "1px solid #d1d5db",
-                background: "#fff",
-                borderRadius: 8,
-                boxShadow: "0 8px 24px rgba(0, 0, 0, 0.12)",
-                padding: 8,
-                zIndex: 20
-              }}
-            >
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <a href="/remote-objects" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
-                  Revisar visibilidad de SP (dbo)
-                </a>
-                <a href="/dbmail-callers" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
-                  Relevamiento de sp_send_dbmail
-                </a>
-                <a href="/sqlmail-monitor" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
-                  Monitoreo SQL Mail
-                </a>
+            <div className="settings-menu">
+              <div className="settings-menu-items">
+                <a href="/remote-objects">Revisar visibilidad de SP (dbo)</a>
+                <a href="/dbmail-callers">Relevamiento de sp_send_dbmail</a>
+                <a href="/sqlmail-monitor">Monitoreo SQL Mail</a>
               </div>
             </div>
           )}
           <button onClick={handleLogout}>Cerrar sesión</button>
         </div>
-      </div>
+      </header>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <nav className="view-switcher">
         {VIEWS.map(view => (
           <button key={view} onClick={() => setActiveView(view)} disabled={activeView === view}>
             {view}
           </button>
         ))}
-      </div>
+      </nav>
 
-      {activeView === "Dashboard" && <Stats />}
-      {activeView === "Pending" && <MailTable status="Pending" />}
-      {activeView === "Failed" && <MailTable status="Failed" />}
-      {activeView === "Sent" && <MailTable status="Sent" />}
-    </div>
+      <section className="panel">
+        {activeView === "Dashboard" && <Stats />}
+        {activeView === "Pending" && <MailTable status="Pending" />}
+        {activeView === "Failed" && <MailTable status="Failed" />}
+        {activeView === "Sent" && <MailTable status="Sent" />}
+      </section>
+    </main>
   );
 }
