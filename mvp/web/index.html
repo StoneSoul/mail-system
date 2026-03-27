@@ -21,7 +21,7 @@
     body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:var(--bg);color:var(--text)}
     .shell{max-width:1280px;margin:24px auto;padding:0 16px}
     .card{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow)}
-    .header{display:flex;justify-content:space-between;align-items:center;padding:18px 20px}
+    .header{display:flex;justify-content:space-between;align-items:center;padding:18px 20px;position:relative}
     .title{margin:0;font-size:28px}
     .sub{margin:2px 0 0;color:var(--muted)}
     .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:0 20px 20px}
@@ -58,20 +58,6 @@
     .sp-row{display:flex;gap:8px;align-items:center}
     .sp-row select{flex:1 1 auto;min-width:0}
     .sp-row button{white-space:nowrap}
-    .db-filter-wrap{position:relative}
-    .db-filter-panel{
-      position:absolute;
-      top:100%;
-      left:0;
-      z-index:20;
-      min-width:280px;
-      margin-top:6px;
-      padding:10px;
-      border:1px solid var(--border);
-      border-radius:10px;
-      background:#fff;
-      box-shadow:var(--shadow);
-    }
     .db-filter-list{display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
     .db-filter-item{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text)}
     #remoteTarget{max-width:none}
@@ -84,6 +70,27 @@
     }
     .info-box{margin:0 20px 16px;padding:12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc}
     .small{font-size:12px;color:var(--muted);margin:2px 0}
+
+    .header-actions{display:flex;align-items:center;gap:8px;position:relative}
+    .icon-btn{width:38px;height:38px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:18px}
+    .settings-panel{
+      position:absolute;
+      top:calc(100% + 8px);
+      right:0;
+      z-index:30;
+      min-width:300px;
+      max-width:420px;
+      padding:12px;
+      border:1px solid var(--border);
+      border-radius:12px;
+      background:#fff;
+      box-shadow:var(--shadow);
+    }
+    .settings-title{margin:0 0 10px;font-size:14px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+    .settings-section{padding:10px 0;border-top:1px solid #e5e7eb}
+    .settings-section:first-of-type{border-top:none;padding-top:0}
+    .settings-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .settings-note{margin:6px 0 0}
   </style>
 </head>
 <body>
@@ -106,9 +113,24 @@
           <h2 class="title">Mail Fullboard</h2>
           <p class="sub">Panel operativo con filtros inteligentes de errores.</p>
         </div>
-        <div>
+        <div class="header-actions">
           <span id="who" style="margin-right:8px"></span>
+          <button class="icon-btn" type="button" onclick="toggleSettingsPanel()" aria-label="Abrir configuración">⚙️</button>
           <button onclick="doLogout()">Cerrar sesión</button>
+          <div id="settingsPanel" class="settings-panel hidden">
+            <h3 class="settings-title">Parámetros y configuración</h3>
+            <div class="settings-section">
+              <div class="settings-actions">
+                <button type="button" onclick="openRemoteObjects()">Seleccionar dbo visibles</button>
+                <button type="button" onclick="loadDbInsights()">Revisar tablas MailDB</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <label style="margin-bottom:6px">Filtrar bases visibles para ejecutar SP</label>
+              <div id="databaseFilterOptions" class="db-filter-list"></div>
+              <p id="databaseFilterSummary" class="small settings-note">Cargando bases...</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -121,12 +143,10 @@
 
       <div class="toolbar">
         <button class="primary" onclick="runSender()">Ejecutar Sender</button>
-        <button onclick="openRemoteObjects()">Configurar dbo visibles</button>
         <button onclick="requeueRetryable()">Reencolar recuperables</button>
         <button class="danger" onclick="requeueAll()">Reencolar TODO Failed</button>
         <button class="danger" onclick="deleteSelected()">Borrar seleccionados</button>
         <button class="danger" onclick="deleteFiltered()">Borrar filtrados</button>
-        <button onclick="loadDbInsights()">Revisar tablas MailDB</button>
         <button onclick="loadAll()">Refrescar</button>
       </div>
 
@@ -139,13 +159,7 @@
               <option value="test">DTTPRUEBA</option>
               <option value="express">SRV-EnviosMail (SQL Express)</option>
             </select>
-            <div class="db-filter-wrap">
-              <button type="button" onclick="toggleDatabaseFilterPanel()">Elegir bases</button>
-              <div id="databaseFilterPanel" class="db-filter-panel hidden">
-                <div id="databaseFilterOptions" class="db-filter-list"></div>
-              </div>
-              <p id="databaseFilterSummary" class="small">Cargando bases...</p>
-            </div>
+
           </div>
           <div class="field producer-field">
             <label>Ejecutar SP</label>
@@ -447,13 +461,11 @@ function toggleDatabaseSelection(databaseName, isChecked){
   renderProducerOptions();
 }
 
-function toggleDatabaseFilterPanel(){
-  const panel = document.getElementById("databaseFilterPanel");
-  panel.classList.toggle("hidden");
+function toggleSettingsPanel(){
+  document.getElementById("settingsPanel")?.classList.toggle("hidden");
 }
 
 function onRemoteTargetChange(){
-  document.getElementById("databaseFilterPanel")?.classList.add("hidden");
   loadProducers();
 }
 
@@ -684,6 +696,16 @@ function retryBadge(isRetryable){
   if(Number(isRetryable)===1) return '<span class="badge badge-retry">Reintentar</span>';
   return '<span class="badge badge-noretry">No reintentar</span>';
 }
+
+document.addEventListener("click", (event) => {
+  const panel = document.getElementById("settingsPanel");
+  if (!panel || panel.classList.contains("hidden")) return;
+  const isSettingsToggle = event.target.closest(".icon-btn");
+  if (isSettingsToggle) return;
+  if (!event.target.closest("#settingsPanel")) {
+    panel.classList.add("hidden");
+  }
+});
 
 checkAuth();
 setInterval(async () => {
