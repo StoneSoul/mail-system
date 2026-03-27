@@ -1172,7 +1172,12 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.last_mod_date,
         sp.name AS profile_name,
         proc.last_process_id,
-        ISNULL(evt.last_error, '') AS last_error
+        ISNULL((
+          SELECT MAX(CONVERT(NVARCHAR(4000), ISNULL(el.[description], '')))
+          FROM msdb.dbo.sysmail_event_log el
+          WHERE el.mailitem_id = ai.mailitem_id
+            AND LOWER(ISNULL(el.event_type, '')) = 'error'
+        ), '') AS last_error
       FROM msdb.dbo.sysmail_allitems ai
       LEFT JOIN msdb.dbo.sysmail_profile sp ON ai.profile_id = sp.profile_id
       LEFT JOIN (
@@ -1183,14 +1188,6 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         WHERE el.process_id IS NOT NULL
         GROUP BY el.mailitem_id
       ) proc ON proc.mailitem_id = ai.mailitem_id
-      LEFT JOIN (
-        SELECT
-          el.mailitem_id,
-          MAX(CAST(ISNULL(el.[description], '') AS NVARCHAR(4000))) AS last_error
-        FROM msdb.dbo.sysmail_event_log el
-        WHERE LOWER(ISNULL(el.event_type, '')) = 'error'
-        GROUP BY el.mailitem_id
-      ) evt ON evt.mailitem_id = ai.mailitem_id
       WHERE 1 = 1
       ${statusClause}
       ORDER BY ai.mailitem_id DESC
