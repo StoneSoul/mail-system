@@ -1144,6 +1144,9 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.sent_date,
         ai.last_mod_date,
         sp.name AS profile_name,
+        ev.last_process_id,
+        ev.last_event_type,
+        ev.last_event_date,
         ISNULL(ev.last_error, '') AS last_error
       FROM msdb.dbo.sysmail_allitems ai
       LEFT JOIN msdb.dbo.sysmail_profile sp ON ai.profile_id = sp.profile_id
