@@ -1149,6 +1149,9 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
       LEFT JOIN msdb.dbo.sysmail_profile sp ON ai.profile_id = sp.profile_id
       OUTER APPLY (
         SELECT TOP (1) el.[description] AS last_error
+             , el.process_id AS last_process_id
+             , el.event_type AS last_event_type
+             , el.log_date AS last_event_date
         FROM msdb.dbo.sysmail_event_log el
         WHERE el.mailitem_id = ai.mailitem_id
         ORDER BY el.log_date DESC, el.log_id DESC
@@ -1182,7 +1185,10 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
     sendRequestDate: row.send_request_date || null,
     sentDate: row.sent_date || null,
     lastModDate: row.last_mod_date || null,
-    lastError: String(row.last_error || "")
+    lastError: String(row.last_error || ""),
+    lastProcessId: row.last_process_id === null || row.last_process_id === undefined ? null : Number(row.last_process_id),
+    lastEventType: String(row.last_event_type || ""),
+    lastEventDate: row.last_event_date || null
   }));
 }
 

@@ -5,7 +5,7 @@
   <title>Monitoreo SQL Mail</title>
   <style>
     body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fb;color:#111827}
-    .shell{max-width:1260px;margin:22px auto;padding:0 16px}
+    .shell{width:100%;max-width:none;margin:0;padding:12px}
     .card{background:#fff;border:1px solid #dbe3ef;border-radius:14px}
     .head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #e5e7eb}
     .controls{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
@@ -19,7 +19,7 @@
     .kpi{border:1px solid #e5e7eb;border-radius:10px;padding:8px;background:#fafafa}
     .kpi b{display:block;font-size:18px;margin-top:2px}
     .table-wrap{padding:0 16px 16px;overflow:auto}
-    table{border-collapse:collapse;width:100%;min-width:1300px}
+    table{border-collapse:collapse;width:100%;min-width:1550px}
     th,td{padding:8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top}
     th{background:#f3f4f6}
     code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word}
@@ -44,6 +44,7 @@
       <div>
         <h2 style="margin:0">Monitoreo SQL Mail (solo lectura)</h2>
         <p class="muted" style="margin:4px 0 0">Vista aislada para auditar envíos de Database Mail sin tocar el flujo operativo.</p>
+        <p class="muted" style="margin:4px 0 0">Incluye pistas técnicas (proceso/evento de SQL Mail) para acercarse al store/job que originó cada envío.</p>
       </div>
       <div>
         <a href="/" style="margin-right:8px">← Volver al Fullboard</a>
@@ -168,6 +169,9 @@ function renderRows(rows){
       <td>${item.blindCopyRecipients || ""}</td>
       <td>${item.subject || ""}</td>
       <td>${item.bodyFormat || ""}</td>
+      <td>${item.lastProcessId ?? ""}</td>
+      <td>${item.lastEventType || ""}</td>
+      <td>${formatDate(item.lastEventDate)}</td>
       <td>${formatDate(item.sendRequestDate)}</td>
       <td>${formatDate(item.sentDate)}</td>
       <td><code>${item.lastError || ""}</code></td>
@@ -188,6 +192,9 @@ function renderRows(rows){
           <th>BCC</th>
           <th>Asunto</th>
           <th>Formato</th>
+          <th>Proceso SQLMail</th>
+          <th>Tipo evento</th>
+          <th>Fecha evento</th>
           <th>Solicitado</th>
           <th>Enviado</th>
           <th>Último error</th>
