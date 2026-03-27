@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Relevamiento sp_send_dbmail</title>
+  <style>
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fb;color:#111827}
+    .shell{max-width:1160px;margin:22px auto;padding:0 16px}
+    .card{background:#fff;border:1px solid #dbe3ef;border-radius:14px}
+    .head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #e5e7eb}
+    .controls{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
+    .target{padding:8px 10px;border-radius:8px;border:1px solid #cdd6e2;background:#fff}
+    button{border:1px solid #cdd6e2;background:#fff;padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+    .muted{font-size:12px;color:#6b7280}
+    .hidden{display:none}
+    .target-block{border:1px solid #e5e7eb;border-radius:10px;margin:10px 0;background:#fafafa}
+    .target-title{padding:10px 12px;border-bottom:1px solid #e5e7eb;font-size:14px;margin:0}
+    .table-wrap{padding:10px 12px;overflow:auto}
+    table{border-collapse:collapse;width:100%;min-width:760px}
+    th,td{padding:8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top}
+    th{background:#f3f4f6}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word}
+    .badge{display:inline-block;padding:2px 8px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:999px;font-size:11px}
+    .error-box{margin:12px 16px;padding:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:10px;color:#991b1b}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div id="loginHint" class="card hidden" style="padding:16px">
+    <p>Tu sesión expiró. Volvé al panel principal para iniciar sesión.</p>
+    <a href="/">Ir al login</a>
+  </div>
+
+  <div id="main" class="card hidden">
+    <div class="head">
+      <div>
+        <h2 style="margin:0">Relevamiento de llamadas a sp_send_dbmail</h2>
+        <p class="muted" style="margin:4px 0 0">Detecta qué objetos SQL disparan envíos directos y desde qué ambiente/base.</p>
+      </div>
+      <div>
+        <a href="/" style="margin-right:8px">← Volver al Fullboard</a>
+        <button onclick="logout()">Cerrar sesión</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <label for="target">Ambiente</label>
+      <select id="target" class="target">
+        <option value="all">DTTPROD + DTTPRUEBA</option>
+        <option value="prod">Solo DTTPROD</option>
+        <option value="test">Solo DTTPRUEBA</option>
+      </select>
+      <button class="primary" onclick="loadCallers()">Actualizar relevamiento</button>
+      <span id="summary" class="muted"></span>
+    </div>
+
+    <div id="errors"></div>
+    <div id="results" style="padding: 0 16px 16px"></div>
+  </div>
+</div>
+
+<script>
+const API_ROOT = (() => {
+  if (window.__MAIL_API_ROOT__) return String(window.__MAIL_API_ROOT__).replace(/\/$/, "");
+  return "http://localhost:3000";
+})();
+const API = `${API_ROOT}/api`;
+const AUTH = `${API_ROOT}/auth`;
+
+async function j(url,opt){
+  const r=await fetch(url,{credentials:"include",...(opt||{})});
+  if(r.status===401){
+    showLoginHint();
+    throw new Error("No autorizado");
+  }
+  const payload = await r.json().catch(() => ({}));
+  if(!r.ok){
+    throw new Error(payload?.error || `Error HTTP ${r.status}`);
+  }
+  return payload;
+}
+
+function showMain(){
+  main.classList.remove("hidden");
+  loginHint.classList.add("hidden");
+}
+
+function showLoginHint(){
+  loginHint.classList.remove("hidden");
+  main.classList.add("hidden");
+}
+
+function renderRows(rows){
+  if(!rows.length){
+    return "<p class='muted'>Sin objetos que llamen a sp_send_dbmail en este grupo.</p>";
+  }
+
+  const body = rows.map(item => `
+    <tr>
+      <td><span class="badge">${item.target.toUpperCase()}</span></td>
+      <td>${item.database}</td>
+      <td>${item.schema}</td>
+      <td>${item.objectName}</td>
+      <td>${item.objectType}</td>
+      <td><code>${item.snippet || "(sin snippet)"}</code></td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Origen</th>
+            <th>Base</th>
+            <th>Schema</th>
+            <th>Objeto SQL</th>
+            <th>Tipo</th>
+            <th>Fragmento detectado</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadCallers(){
+  try{
+    const target = document.getElementById("target").value;
+    const data = await j(`${API}/db/dbmail-callers?target=${encodeURIComponent(target)}`);
+    const objectsByTarget = data.objectsByTarget || {};
+    const total = Number(data.totalObjects || 0);
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+
+    summary.textContent = `Objetos detectados: ${total}.`;    
+
+    errorsContainer.innerHTML = errors.length
+      ? `<div class="error-box"><strong>Advertencias de relevamiento:</strong><ul>${errors.map(err => `<li>${err.target.toUpperCase()} / ${err.database}: ${err.error}</li>`).join("")}</ul></div>`
+      : "";
+
+    const targetKeys = Object.keys(objectsByTarget);
+    if(!targetKeys.length){
+      results.innerHTML = "<p class='muted'>No se detectaron llamadas directas a sp_send_dbmail.</p>";
+      return;
+    }
+
+    results.innerHTML = targetKeys.sort().map(targetKey => {
+      const databases = objectsByTarget[targetKey] || {};
+      const databaseKeys = Object.keys(databases);
+      const dbBlocks = databaseKeys.sort().map(dbName => `
+        <div class="target-block">
+          <h3 class="target-title">${targetKey.toUpperCase()} / ${dbName}</h3>
+          ${renderRows(databases[dbName] || [])}
+        </div>
+      `).join("");
+
+      return dbBlocks;
+    }).join("");
+  }catch(err){
+    summary.textContent = "";
+    errorsContainer.innerHTML = `<div class="error-box">No se pudo completar el relevamiento: ${err.message}</div>`;
+    results.innerHTML = "";
+  }
+}
+
+async function checkAuth(){
+  try{
+    const status = await j(`${AUTH}/status`);
+    if(!status.loggedIn){
+      showLoginHint();
+      return;
+    }
+    showMain();
+    await loadCallers();
+  }catch(_){
+    showLoginHint();
+  }
+}
+
+async function logout(){
+  try{ await j(`${AUTH}/logout`, {method:"POST"}); } catch(_err) {}
+  location.href = "/";
+}
+
+const summary = document.getElementById("summary");
+const errorsContainer = document.getElementById("errors");
+const results = document.getElementById("results");
+checkAuth();
+</script>
+</body>
+</html>

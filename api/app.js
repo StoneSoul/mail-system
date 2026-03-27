@@ -24,6 +24,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
 const remoteObjectsPath = path.resolve(__dirname, "../mvp/web/remote-objects.html");
+const dbmailCallersPath = path.resolve(__dirname, "../mvp/web/dbmail-callers.html");
 
 function normalizeCredential(rawValue, fallback) {
   const source = rawValue ?? fallback;
@@ -580,6 +581,10 @@ app.get("/remote-objects", authMiddleware, (_req, res) => {
   res.sendFile(remoteObjectsPath);
 });
 
+app.get("/dbmail-callers", authMiddleware, (_req, res) => {
+  res.sendFile(dbmailCallersPath);
+});
+
 app.get("/favicon.ico", (_req, res) => {
   res.status(204).end();
 });
@@ -1009,6 +1014,108 @@ app.get("/api/db/remote-objects", authMiddleware, async (req, res) => {
       target,
       availableDatabases: Object.keys(groupedByDatabase).sort((a, b) => a.localeCompare(b)),
       objectsByDatabase: groupedByDatabase
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function fetchDbMailCallersByTarget(target) {
+  const databasesByTarget = getRemoteDatabasesByTarget();
+  const databaseList = (databasesByTarget[target] || [])
+    .map(sanitizeSqlIdentifier)
+    .filter(Boolean);
+  const findings = [];
+  const errors = [];
+
+  for (const databaseName of databaseList) {
+    try {
+      const rows = await sqlQuery(
+        `
+          SELECT
+            s.name AS schemaName,
+            o.name AS objectName,
+            o.type AS objectTypeCode,
+            o.type_desc AS objectType,
+            CASE
+              WHEN sm.definition LIKE '%sp_send_dbmail%' THEN 1
+              ELSE 0
+            END AS usesDbMail,
+            CASE
+              WHEN sm.definition LIKE '%sp_send_dbmail%' THEN SUBSTRING(sm.definition, CHARINDEX('sp_send_dbmail', sm.definition), 320)
+              ELSE NULL
+            END AS snippet
+          FROM [${databaseName}].sys.sql_modules sm
+          INNER JOIN [${databaseName}].sys.objects o ON sm.object_id = o.object_id
+          INNER JOIN [${databaseName}].sys.schemas s ON o.schema_id = s.schema_id
+          WHERE sm.definition LIKE '%sp_send_dbmail%'
+          ORDER BY s.name, o.name
+        `,
+        [],
+        target
+      );
+
+      for (const row of rows) {
+        findings.push({
+          target,
+          database: databaseName,
+          schema: String(row.schemaName || ""),
+          objectName: String(row.objectName || ""),
+          objectType: String(row.objectType || row.objectTypeCode || ""),
+          usesDbMail: Number(row.usesDbMail) === 1,
+          snippet: String(row.snippet || "").replace(/\s+/g, " ").trim()
+        });
+      }
+    } catch (error) {
+      errors.push({
+        target,
+        database: databaseName,
+        error: error?.message || "Error desconocido consultando catálogo remoto."
+      });
+    }
+  }
+
+  return { findings, errors };
+}
+
+app.get("/api/db/dbmail-callers", authMiddleware, async (req, res) => {
+  try {
+    const requestedTarget = req.query?.target ? String(req.query.target).toLowerCase() : "all";
+    const targets = requestedTarget === "all"
+      ? ["prod", "test"]
+      : [resolveRemoteTarget(requestedTarget)];
+
+    const results = [];
+    const errors = [];
+    for (const target of targets) {
+      const scan = await fetchDbMailCallersByTarget(target);
+      results.push(...scan.findings);
+      errors.push(...scan.errors);
+    }
+
+    const grouped = {};
+    for (const row of results) {
+      if (!grouped[row.target]) grouped[row.target] = {};
+      if (!grouped[row.target][row.database]) grouped[row.target][row.database] = [];
+      grouped[row.target][row.database].push(row);
+    }
+
+    Object.keys(grouped).forEach(target => {
+      Object.keys(grouped[target]).forEach(databaseName => {
+        grouped[target][databaseName].sort((a, b) => {
+          const schemaCompare = a.schema.localeCompare(b.schema);
+          if (schemaCompare !== 0) return schemaCompare;
+          return a.objectName.localeCompare(b.objectName);
+        });
+      });
+    });
+
+    res.json({
+      ok: true,
+      targets,
+      totalObjects: results.length,
+      objectsByTarget: grouped,
+      errors
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
