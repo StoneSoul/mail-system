@@ -26,6 +26,7 @@ const panelPath = path.resolve(__dirname, "../mvp/web/index.html");
 const remoteObjectsPath = path.resolve(__dirname, "../mvp/web/remote-objects.html");
 const dbmailCallersPath = path.resolve(__dirname, "../mvp/web/dbmail-callers.html");
 const mailDbInsightsPath = path.resolve(__dirname, "../mvp/web/maildb-insights.html");
+const sqlMailMonitorPath = path.resolve(__dirname, "../mvp/web/sqlmail-monitor.html");
 
 function normalizeCredential(rawValue, fallback) {
   const source = rawValue ?? fallback;
@@ -590,6 +591,10 @@ app.get("/maildb-insights", authMiddleware, (_req, res) => {
   res.sendFile(mailDbInsightsPath);
 });
 
+app.get("/sqlmail-monitor", authMiddleware, (_req, res) => {
+  res.sendFile(sqlMailMonitorPath);
+});
+
 app.get("/favicon.ico", (_req, res) => {
   res.status(204).end();
 });
@@ -1083,6 +1088,76 @@ async function fetchDbMailCallersByTarget(target) {
   return { findings, errors };
 }
 
+function normalizeMailSentStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "sent") return "sent";
+  if (normalized === "failed") return "failed";
+  if (normalized === "retrying") return "retrying";
+  if (normalized === "unsent") return "unsent";
+  return "other";
+}
+
+async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
+  const statusClause = statusFilter ? "AND ai.sent_status = @statusFilter" : "";
+  const rows = await sqlQuery(
+    `
+      SELECT TOP (${top})
+        ai.mailitem_id,
+        ai.profile_id,
+        ai.recipients,
+        ai.copy_recipients,
+        ai.blind_copy_recipients,
+        ai.[subject],
+        ai.body_format,
+        ai.sent_status,
+        ai.from_address,
+        ai.reply_to,
+        ai.importance,
+        ai.send_request_date,
+        ai.sent_date,
+        ai.last_mod_date,
+        sp.name AS profile_name,
+        ISNULL(ev.last_error, '') AS last_error
+      FROM msdb.dbo.sysmail_allitems ai
+      LEFT JOIN msdb.dbo.sysmail_profile sp ON ai.profile_id = sp.profile_id
+      OUTER APPLY (
+        SELECT TOP (1) el.[description] AS last_error
+        FROM msdb.dbo.sysmail_event_log el
+        WHERE el.mailitem_id = ai.mailitem_id
+        ORDER BY el.log_date DESC, el.log_id DESC
+      ) ev
+      WHERE 1 = 1
+      ${statusClause}
+      ORDER BY ai.mailitem_id DESC
+    `,
+    statusFilter
+      ? [{ name: "statusFilter", type: sql.NVarChar(20), value: statusFilter }]
+      : [],
+    target
+  );
+
+  return rows.map(row => ({
+    target,
+    mailItemId: Number(row.mailitem_id),
+    profileId: row.profile_id === null || row.profile_id === undefined ? null : Number(row.profile_id),
+    profileName: String(row.profile_name || ""),
+    recipients: String(row.recipients || ""),
+    copyRecipients: String(row.copy_recipients || ""),
+    blindCopyRecipients: String(row.blind_copy_recipients || ""),
+    subject: String(row.subject || ""),
+    bodyFormat: String(row.body_format || ""),
+    sentStatus: String(row.sent_status || ""),
+    normalizedStatus: normalizeMailSentStatus(row.sent_status),
+    fromAddress: String(row.from_address || ""),
+    replyTo: String(row.reply_to || ""),
+    importance: String(row.importance || ""),
+    sendRequestDate: row.send_request_date || null,
+    sentDate: row.sent_date || null,
+    lastModDate: row.last_mod_date || null,
+    lastError: String(row.last_error || "")
+  }));
+}
+
 app.get("/api/db/dbmail-callers", authMiddleware, async (req, res) => {
   try {
     const requestedTarget = req.query?.target ? String(req.query.target).toLowerCase() : "all";
@@ -1120,6 +1195,58 @@ app.get("/api/db/dbmail-callers", authMiddleware, async (req, res) => {
       targets,
       totalObjects: results.length,
       objectsByTarget: grouped,
+      errors
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/db/sqlmail-monitor", authMiddleware, async (req, res) => {
+  try {
+    const requestedTarget = req.query?.target ? String(req.query.target).toLowerCase() : "all";
+    const statusFilterRaw = req.query?.status ? String(req.query.status).toLowerCase() : "";
+    const topRaw = Number(req.query?.top);
+    const top = Number.isInteger(topRaw) && topRaw > 0 ? Math.min(topRaw, 2000) : 300;
+
+    const targets = requestedTarget === "all"
+      ? ["prod", "test"]
+      : [resolveRemoteTarget(requestedTarget)];
+    const allowedStatuses = new Set(["sent", "failed", "retrying", "unsent"]);
+    const statusFilter = allowedStatuses.has(statusFilterRaw) ? statusFilterRaw : "";
+
+    const items = [];
+    const errors = [];
+    for (const target of targets) {
+      try {
+        const rows = await fetchSqlMailActivityByTarget(target, { statusFilter, top });
+        items.push(...rows);
+      } catch (error) {
+        errors.push({
+          target,
+          error: error?.message || "Error desconocido leyendo msdb.dbo.sysmail_allitems."
+        });
+      }
+    }
+
+    items.sort((a, b) => {
+      if (a.mailItemId !== b.mailItemId) return b.mailItemId - a.mailItemId;
+      return a.target.localeCompare(b.target);
+    });
+
+    const statusSummary = items.reduce((acc, item) => {
+      const key = item.normalizedStatus || "other";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+    res.json({
+      ok: true,
+      targets,
+      statusFilter: statusFilter || null,
+      totalItems: items.length,
+      statusSummary,
+      items,
       errors
     });
   } catch (e) {

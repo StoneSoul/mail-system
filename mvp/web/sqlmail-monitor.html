@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Monitoreo SQL Mail</title>
+  <style>
+    body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fb;color:#111827}
+    .shell{max-width:1260px;margin:22px auto;padding:0 16px}
+    .card{background:#fff;border:1px solid #dbe3ef;border-radius:14px}
+    .head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #e5e7eb}
+    .controls{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
+    .target{padding:8px 10px;border-radius:8px;border:1px solid #cdd6e2;background:#fff}
+    button{border:1px solid #cdd6e2;background:#fff;padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+    .muted{font-size:12px;color:#6b7280}
+    .small{font-size:12px;color:#6b7280}
+    .hidden{display:none}
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;padding:0 16px 14px}
+    .kpi{border:1px solid #e5e7eb;border-radius:10px;padding:8px;background:#fafafa}
+    .kpi b{display:block;font-size:18px;margin-top:2px}
+    .table-wrap{padding:0 16px 16px;overflow:auto}
+    table{border-collapse:collapse;width:100%;min-width:1200px}
+    th,td{padding:8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:left;vertical-align:top}
+    th{background:#f3f4f6}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid transparent}
+    .badge-sent{background:#dcfce7;color:#166534;border-color:#86efac}
+    .badge-failed{background:#fee2e2;color:#991b1b;border-color:#fca5a5}
+    .badge-retrying{background:#dbeafe;color:#1d4ed8;border-color:#93c5fd}
+    .badge-unsent{background:#fef9c3;color:#854d0e;border-color:#fde68a}
+    .badge-other{background:#f3f4f6;color:#374151;border-color:#d1d5db}
+    .error-box{margin:12px 16px;padding:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:10px;color:#991b1b}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div id="loginHint" class="card hidden" style="padding:16px">
+    <p>Tu sesión expiró. Volvé al panel principal para iniciar sesión.</p>
+    <a href="/">Ir al login</a>
+  </div>
+
+  <div id="main" class="card hidden">
+    <div class="head">
+      <div>
+        <h2 style="margin:0">Monitoreo SQL Mail (solo lectura)</h2>
+        <p class="muted" style="margin:4px 0 0">Vista aislada para auditar envíos de Database Mail sin tocar el flujo operativo.</p>
+      </div>
+      <div>
+        <a href="/" style="margin-right:8px">← Volver al Fullboard</a>
+        <button onclick="logout()">Cerrar sesión</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <label for="target">Ambiente</label>
+      <select id="target" class="target">
+        <option value="all">DTTPROD + DTTPRUEBA</option>
+        <option value="prod">Solo DTTPROD</option>
+        <option value="test">Solo DTTPRUEBA</option>
+      </select>
+
+      <label for="status">Estado</label>
+      <select id="status" class="target">
+        <option value="">Todos</option>
+        <option value="sent">Sent</option>
+        <option value="failed">Failed</option>
+        <option value="retrying">Retrying</option>
+        <option value="unsent">Unsent</option>
+      </select>
+
+      <label for="top">Top</label>
+      <select id="top" class="target">
+        <option value="100">100</option>
+        <option value="300" selected>300</option>
+        <option value="1000">1000</option>
+      </select>
+
+      <button class="primary" onclick="loadMonitor()">Actualizar monitoreo</button>
+      <span id="summary" class="muted"></span>
+    </div>
+
+    <div id="errors"></div>
+    <div id="kpis" class="kpis"></div>
+    <div id="results" class="table-wrap"></div>
+  </div>
+</div>
+
+<script>
+const API_ROOT = (() => {
+  if (window.__MAIL_API_ROOT__) return String(window.__MAIL_API_ROOT__).replace(/\/$/, "");
+  return "http://localhost:3000";
+})();
+const API = `${API_ROOT}/api`;
+const AUTH = `${API_ROOT}/auth`;
+
+async function j(url,opt){
+  const r=await fetch(url,{credentials:"include",...(opt||{})});
+  if(r.status===401){
+    showLoginHint();
+    throw new Error("No autorizado");
+  }
+  const payload = await r.json().catch(() => ({}));
+  if(!r.ok){
+    throw new Error(payload?.error || `Error HTTP ${r.status}`);
+  }
+  return payload;
+}
+
+function showMain(){
+  main.classList.remove("hidden");
+  loginHint.classList.add("hidden");
+}
+
+function showLoginHint(){
+  loginHint.classList.remove("hidden");
+  main.classList.add("hidden");
+}
+
+function badgeFor(status){
+  const normalized = String(status || "").toLowerCase();
+  const klass = ["sent", "failed", "retrying", "unsent"].includes(normalized) ? normalized : "other";
+  return `<span class="badge badge-${klass}">${status || "N/A"}</span>`;
+}
+
+function formatDate(value){
+  if(!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("es-AR", { hour12: false });
+}
+
+function renderKpis(summaryData){
+  const sent = Number(summaryData?.sent || 0);
+  const failed = Number(summaryData?.failed || 0);
+  const retrying = Number(summaryData?.retrying || 0);
+  const unsent = Number(summaryData?.unsent || 0);
+  const other = Number(summaryData?.other || 0);
+
+  return [
+    { label: "Sent", value: sent },
+    { label: "Failed", value: failed },
+    { label: "Retrying", value: retrying },
+    { label: "Unsent", value: unsent },
+    { label: "Otros", value: other }
+  ].map(item => `
+    <div class="kpi">
+      <span class="small">${item.label}</span>
+      <b>${item.value.toLocaleString("es-AR")}</b>
+    </div>
+  `).join("");
+}
+
+function renderRows(rows){
+  if(!rows.length){
+    return "<p class='muted'>No hay envíos para los filtros seleccionados.</p>";
+  }
+
+  const body = rows.map(item => `
+    <tr>
+      <td>${item.target.toUpperCase()}</td>
+      <td>${item.mailItemId}</td>
+      <td>${item.profileName || item.profileId || ""}</td>
+      <td>${badgeFor(item.sentStatus)}</td>
+      <td>${item.recipients || ""}</td>
+      <td>${item.copyRecipients || ""}</td>
+      <td>${item.blindCopyRecipients || ""}</td>
+      <td>${item.subject || ""}</td>
+      <td>${item.bodyFormat || ""}</td>
+      <td>${formatDate(item.sendRequestDate)}</td>
+      <td>${formatDate(item.sentDate)}</td>
+      <td><code>${item.lastError || ""}</code></td>
+    </tr>
+  `).join("");
+
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Origen</th>
+          <th>MailItemId</th>
+          <th>Perfil</th>
+          <th>Estado</th>
+          <th>To</th>
+          <th>CC</th>
+          <th>BCC</th>
+          <th>Asunto</th>
+          <th>Formato</th>
+          <th>Solicitado</th>
+          <th>Enviado</th>
+          <th>Último error</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
+async function loadMonitor(){
+  try{
+    const target = document.getElementById("target").value;
+    const status = document.getElementById("status").value;
+    const top = document.getElementById("top").value;
+
+    const qs = new URLSearchParams();
+    if (target) qs.set("target", target);
+    if (status) qs.set("status", status);
+    if (top) qs.set("top", top);
+
+    const data = await j(`${API}/db/sqlmail-monitor?${qs.toString()}`);
+    const total = Number(data.totalItems || 0);
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+
+    summary.textContent = `Registros obtenidos: ${total}. Vista solamente de lectura.`;
+    errorsContainer.innerHTML = errors.length
+      ? `<div class="error-box"><strong>Advertencias:</strong><ul>${errors.map(err => `<li>${String(err.target || "").toUpperCase()}: ${err.error}</li>`).join("")}</ul></div>`
+      : "";
+
+    kpis.innerHTML = renderKpis(data.statusSummary || {});
+    results.innerHTML = renderRows(Array.isArray(data.items) ? data.items : []);
+  }catch(err){
+    summary.textContent = "";
+    errorsContainer.innerHTML = `<div class="error-box">No se pudo cargar el monitoreo: ${err.message}</div>`;
+    kpis.innerHTML = "";
+    results.innerHTML = "";
+  }
+}
+
+async function checkAuth(){
+  try{
+    const status = await j(`${AUTH}/status`);
+    if(!status.loggedIn){
+      showLoginHint();
+      return;
+    }
+    showMain();
+    await loadMonitor();
+  }catch(_){
+    showLoginHint();
+  }
+}
+
+async function logout(){
+  try{ await j(`${AUTH}/logout`, {method:"POST"}); } catch(_err) {}
+  location.href = "/";
+}
+
+const summary = document.getElementById("summary");
+const errorsContainer = document.getElementById("errors");
+const kpis = document.getElementById("kpis");
+const results = document.getElementById("results");
+checkAuth();
+</script>
+</body>
+</html>

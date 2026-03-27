@@ -148,6 +148,9 @@ export default function App() {
                 <a href="/dbmail-callers" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
                   Relevamiento de sp_send_dbmail
                 </a>
+                <a href="/sqlmail-monitor" style={{ textDecoration: "none", color: "#111827", padding: "6px 8px" }}>
+                  Monitoreo SQL Mail
+                </a>
               </div>
             </div>
           )}
