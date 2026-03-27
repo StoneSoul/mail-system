@@ -1183,14 +1183,14 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         WHERE el.process_id IS NOT NULL
         GROUP BY el.mailitem_id
       ) proc ON proc.mailitem_id = ai.mailitem_id
-      OUTER APPLY (
-        SELECT TOP (1)
-          ISNULL(el.[description], '') AS last_error
+      LEFT JOIN (
+        SELECT
+          el.mailitem_id,
+          MAX(CAST(ISNULL(el.[description], '') AS NVARCHAR(4000))) AS last_error
         FROM msdb.dbo.sysmail_event_log el
-        WHERE el.mailitem_id = ai.mailitem_id
-          AND LOWER(ISNULL(el.event_type, '')) = 'error'
-        ORDER BY el.log_date DESC, el.event_log_id DESC
-      ) evt
+        WHERE LOWER(ISNULL(el.event_type, '')) = 'error'
+        GROUP BY el.mailitem_id
+      ) evt ON evt.mailitem_id = ai.mailitem_id
       WHERE 1 = 1
       ${statusClause}
       ORDER BY ai.mailitem_id DESC
