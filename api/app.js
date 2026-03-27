@@ -1171,7 +1171,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         ai.sent_date,
         ai.last_mod_date,
         sp.name AS profile_name,
-        proc.last_process_id,
+        prc.last_process_id,
         ISNULL((
           SELECT MAX(CONVERT(NVARCHAR(4000), ISNULL(el.[description], '')))
           FROM msdb.dbo.sysmail_event_log el
@@ -1187,7 +1187,7 @@ async function fetchSqlMailActivityByTarget(target, { statusFilter, top }) {
         FROM msdb.dbo.sysmail_event_log el
         WHERE el.process_id IS NOT NULL
         GROUP BY el.mailitem_id
-      ) proc ON proc.mailitem_id = ai.mailitem_id
+      ) prc ON prc.mailitem_id = ai.mailitem_id
       WHERE 1 = 1
       ${statusClause}
       ORDER BY ai.mailitem_id DESC
