@@ -14,11 +14,11 @@ async function claimPendingMails() {
     ;WITH next_mails AS (
       SELECT TOP (${BATCH_SIZE}) *
       FROM MailQueue WITH (READPAST, UPDLOCK, ROWLOCK)
-      WHERE status IN ('Waiting', 'Pending')
-      ORDER BY id ASC
+      WHERE sent_status IN ('unsent', 'retrying')
+      ORDER BY mailitem_id ASC
     )
     UPDATE next_mails
-    SET status='Queued', last_attempt=GETDATE()
+    SET sent_status='retrying'
     OUTPUT INSERTED.*;
   `);
 
@@ -28,15 +28,14 @@ async function claimPendingMails() {
 async function enqueueMail(mail) {
   try {
     await mailQueue.add("mail", mail, {
-      jobId: `mail-${mail.id}`
+      jobId: `mail-${mail.mailitem_id}`
     });
   } catch (err) {
     await query(`
       UPDATE MailQueue
-      SET status='Pending',
-          error_message='${String(err.message).replace(/'/g, "''")}',
-          last_attempt=GETDATE()
-      WHERE id=${mail.id}
+      SET sent_status='unsent',
+          last_error='${String(err.message).replace(/'/g, "''")}'
+      WHERE mailitem_id=${mail.mailitem_id}
     `);
 
     throw err;
@@ -56,7 +55,7 @@ async function dispatchCycle() {
 
     for (const mail of mails) {
       await enqueueMail(mail);
-      console.log(`[dispatcher] Mail id=${mail.id} encolado`);
+      console.log(`[dispatcher] Mail mailitem_id=${mail.mailitem_id} encolado`);
     }
   } catch (err) {
     console.error("[dispatcher] Error en ciclo de despacho:", err.message);

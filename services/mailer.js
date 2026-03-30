@@ -24,10 +24,17 @@ export async function sendMail(mail) {
   const account = resolveSmtpAccount(requestedProfile);
   const transporter = getTransport(account);
 
+  const to = mail.to_email || mail.recipients;
+  const body = mail.body || "";
+  const bodyFormat = String(mail.body_format || "HTML").toUpperCase();
+  const textBody = bodyFormat === "TEXT" ? body : undefined;
+  const htmlBody = bodyFormat === "TEXT" ? undefined : body;
+
   return transporter.sendMail({
     from: account.fromEmail,
-    to: mail.to_email,
+    to,
     subject: mail.subject,
-    html: mail.body
+    html: htmlBody,
+    text: textBody
   });
 }
