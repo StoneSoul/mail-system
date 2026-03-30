@@ -4,41 +4,71 @@ import { classifyError } from "../utils/errorClassifier.js";
 import { query } from "../services/db.js";
 import { sendTelegram } from "../alerts/telegram.js";
 import { bullConnection, redisConfig } from "../config/redis.js";
+import { col, resolveMailQueueColumns, semanticStatusToken } from "../utils/mailQueueColumns.js";
+
+function escapeSqlString(value) {
+  return String(value || "").replace(/'/g, "''");
+}
+
+async function markAsSent(mail, columns) {
+  const idRaw = mail?.[columns.id] ?? mail?.id ?? mail?.mailitem_id;
+  const id = Number(idRaw);
+  if (!Number.isFinite(id) || !columns.id || !columns.status) return;
+
+  const setParts = [
+    `${col(columns.status)}='${escapeSqlString(semanticStatusToken(columns, "sent"))}'`
+  ];
+
+  if (columns.lastAttempt) setParts.push(`${col(columns.lastAttempt)}=GETDATE()`);
+  if (columns.error) setParts.push(`${col(columns.error)}=NULL`);
+
+  await query(`
+    UPDATE MailQueue
+    SET ${setParts.join(", ")}
+    WHERE ${col(columns.id)}=${id}
+  `);
+}
+
+async function markAsError(mail, columns, errorMessage) {
+  const idRaw = mail?.[columns.id] ?? mail?.id ?? mail?.mailitem_id;
+  const id = Number(idRaw);
+  if (!Number.isFinite(id) || !columns.id || !columns.status) return;
+
+  const setParts = [];
+
+  if (columns.retries) {
+    setParts.push(`${col(columns.status)} = CASE WHEN ${col(columns.retries)} + 1 >= 5 THEN '${escapeSqlString(semanticStatusToken(columns, "failed"))}' ELSE '${escapeSqlString(semanticStatusToken(columns, "pending"))}' END`);
+    setParts.push(`${col(columns.retries)} = ${col(columns.retries)} + 1`);
+  } else {
+    setParts.push(`${col(columns.status)}='${escapeSqlString(semanticStatusToken(columns, "failed"))}'`);
+  }
+
+  if (columns.error) setParts.push(`${col(columns.error)}='${escapeSqlString(errorMessage)}'`);
+  if (columns.processedBy) setParts.push(`${col(columns.processedBy)}='node-worker'`);
+  if (columns.lastAttempt) setParts.push(`${col(columns.lastAttempt)}=GETDATE()`);
+
+  await query(`
+    UPDATE MailQueue
+    SET ${setParts.join(", ")}
+    WHERE ${col(columns.id)}=${id}
+  `);
+}
 
 const worker = new Worker(
-  "mail-queue", // nombre de la cola
+  "mail-queue",
   async job => {
     const mail = job.data;
-    const mailItemId = mail.mailitem_id;
+    const columns = await resolveMailQueueColumns();
 
     try {
       await sendMail(mail);
-
-      await query(`
-        UPDATE MailQueue
-        SET sent_status='sent',
-            sent_date=GETDATE(),
-            last_error=NULL
-        WHERE mailitem_id=${mailItemId}
-      `);
-
+      await markAsSent(mail, columns);
     } catch (err) {
       const type = classifyError(err);
-      const safeError = String(err.message || "Error desconocido").replace(/'/g, "''");
-
-      await query(`
-        UPDATE MailQueue
-        SET sent_status = CASE WHEN retries + 1 >= 5 THEN 'failed' ELSE 'unsent' END,
-            last_error='${safeError}',
-            retries = retries + 1,
-            processed_by='node-worker'
-        WHERE mailitem_id=${mailItemId}
-      `);
-
+      await markAsError(mail, columns, err.message || "Error desconocido");
       await sendTelegram(`❌ Error mail ${mail.recipients || mail.to_email}: ${err.message}`);
 
       if (type === "HARD") throw new Error("HARD_FAIL");
-
       throw err;
     }
   },

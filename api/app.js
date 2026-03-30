@@ -427,6 +427,7 @@ const MAILDB_TABLES = [
 ];
 
 let cachedMailProfileExpression = null;
+let cachedSourceEnvironmentExpression = null;
 let cachedMailQueueColumns = null;
 
 function asSqlIdentifier(columnName) {
@@ -595,6 +596,36 @@ async function resolveMailProfileExpression() {
   return cachedMailProfileExpression;
 }
 
+
+async function resolveSourceEnvironmentExpression() {
+  if (cachedSourceEnvironmentExpression) return cachedSourceEnvironmentExpression;
+
+  const columns = await sqlQuery(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'dbo'
+      AND TABLE_NAME = 'MailQueue'
+      AND COLUMN_NAME IN ('source_environment', 'origin_environment', 'source_env', 'environment', 'ambiente_origen')
+  `);
+
+  const namesByLower = new Map(
+    columns.map(row => {
+      const original = String(row.COLUMN_NAME);
+      return [original.toLowerCase(), original];
+    })
+  );
+
+  for (const key of ["source_environment", "origin_environment", "source_env", "environment", "ambiente_origen"]) {
+    if (namesByLower.has(key)) {
+      cachedSourceEnvironmentExpression = `${asSqlIdentifier(namesByLower.get(key))} AS SourceEnvironment`;
+      return cachedSourceEnvironmentExpression;
+    }
+  }
+
+  cachedSourceEnvironmentExpression = "CAST(NULL AS NVARCHAR(64)) AS SourceEnvironment";
+  return cachedSourceEnvironmentExpression;
+}
+
 // ------------------------
 // Bull Board setup
 // ------------------------
@@ -675,7 +706,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/send", authMiddleware, async (req, res) => {
-  const { to, subject, body, senderProfile } = req.body;
+  const { to, subject, body, senderProfile, sourceEnvironment } = req.body;
 
   const queueColumns = await resolveMailQueueColumns();
   const idCol = queueColumns.idForWhere || "[id]";
@@ -686,15 +717,37 @@ app.post("/send", authMiddleware, async (req, res) => {
     return res.status(500).json({ error: "MailQueue no tiene columnas compatibles para insertar (destinatario/asunto/cuerpo)." });
   }
 
+  const availableColumns = await sqlQuery(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='MailQueue'
+  `);
+  const byLower = new Map(availableColumns.map(row => [String(row.COLUMN_NAME).toLowerCase(), String(row.COLUMN_NAME)]));
+  const senderProfileColumn = byLower.get("sender_profile") || byLower.get("mailprofile") || byLower.get("profile_name");
+  const sourceEnvironmentColumn = byLower.get("source_environment") || byLower.get("origin_environment") || byLower.get("source_env") || byLower.get("environment") || byLower.get("ambiente_origen");
+
+  const insertColumns = [toCol, subjectCol, bodyCol];
+  const insertValues = [`'${escapeSqlString(to)}'`, `'${escapeSqlString(subject)}'`, `'${escapeSqlString(body)}'`];
+
+  if (senderProfileColumn) {
+    insertColumns.push(asSqlIdentifier(senderProfileColumn));
+    insertValues.push(`'${escapeSqlString(senderProfile || "default")}'`);
+  }
+
+  if (sourceEnvironmentColumn) {
+    insertColumns.push(asSqlIdentifier(sourceEnvironmentColumn));
+    insertValues.push(`'${escapeSqlString(sourceEnvironment || process.env.MAIL_SOURCE_ENV || "desconocido")}'`);
+  }
+
   const result = await query(`
-    INSERT INTO MailQueue (${toCol}, ${subjectCol}, ${bodyCol})
+    INSERT INTO MailQueue (${insertColumns.join(", ")})
     OUTPUT INSERTED.*
-    VALUES ('${escapeSqlString(to)}', '${escapeSqlString(subject)}', '${escapeSqlString(body)}')
+    VALUES (${insertValues.join(", ")})
   `);
 
   const mail = result.recordset[0];
   const resolvedId = mail.id || mail.mailitem_id;
-  await mailQueue.add("mail", { ...mail, senderProfile: senderProfile || "default" });
+  await mailQueue.add("mail", { ...mail, senderProfile: senderProfile || mail.sender_profile || "default" });
 
   res.send({ ok: true, id: resolvedId, idColumn: idCol });
 });
@@ -860,6 +913,7 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
 
     const where = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
     const mailProfileExpression = await resolveMailProfileExpression();
+    const sourceEnvironmentExpression = await resolveSourceEnvironmentExpression();
 
     const data = await sqlQuery(
       `SELECT TOP 200
@@ -874,6 +928,7 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
          ${errorCategorySql} AS error_category,
          CASE WHEN ${errorCategorySql} IN ('MAILBOX_FULL', 'MAILBOX_NOT_FOUND') THEN 0 ELSE 1 END AS is_retryable,
          ${mailProfileExpression},
+         ${sourceEnvironmentExpression},
          ${queueColumns.createdAt} AS created_at,
          ${queueColumns.lastAttempt} AS last_attempt
        FROM dbo.MailQueue ${where}
@@ -891,6 +946,7 @@ app.get("/api/queue/columns", authMiddleware, async (_req, res) => {
   try {
     const queueColumns = await resolveMailQueueColumns();
     const mailProfileExpression = await resolveMailProfileExpression();
+    const sourceEnvironmentExpression = await resolveSourceEnvironmentExpression();
     res.json({
       ok: true,
       sourceTable: "dbo.MailQueue",
@@ -903,7 +959,8 @@ app.get("/api/queue/columns", authMiddleware, async (_req, res) => {
         error_message: queueColumns.errorMessage,
         created_at: queueColumns.createdAt,
         last_attempt: queueColumns.lastAttempt,
-        profile: mailProfileExpression
+        profile: mailProfileExpression,
+        source_environment: sourceEnvironmentExpression
       }
     });
   } catch (e) {
