@@ -9,30 +9,33 @@ const worker = new Worker(
   "mail-queue", // nombre de la cola
   async job => {
     const mail = job.data;
+    const mailItemId = mail.mailitem_id;
 
     try {
       await sendMail(mail);
 
       await query(`
         UPDATE MailQueue
-        SET status='Sent', last_attempt=GETDATE()
-        WHERE id=${mail.id}
+        SET sent_status='sent',
+            sent_date=GETDATE(),
+            last_error=NULL
+        WHERE mailitem_id=${mailItemId}
       `);
 
     } catch (err) {
       const type = classifyError(err);
+      const safeError = String(err.message || "Error desconocido").replace(/'/g, "''");
 
       await query(`
         UPDATE MailQueue
-        SET status='Failed',
-            error_message='${err.message}',
-            error_type='${type}',
+        SET sent_status = CASE WHEN retries + 1 >= 5 THEN 'failed' ELSE 'unsent' END,
+            last_error='${safeError}',
             retries = retries + 1,
-            last_attempt=GETDATE()
-        WHERE id=${mail.id}
+            processed_by='node-worker'
+        WHERE mailitem_id=${mailItemId}
       `);
 
-      await sendTelegram(`❌ Error mail ${mail.to_email}: ${err.message}`);
+      await sendTelegram(`❌ Error mail ${mail.recipients || mail.to_email}: ${err.message}`);
 
       if (type === "HARD") throw new Error("HARD_FAIL");
 

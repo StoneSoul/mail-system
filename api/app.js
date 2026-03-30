@@ -450,12 +450,12 @@ async function resolveMailQueueColumns() {
     })
   );
 
-  function pick(candidates) {
+  function pick(candidates, fallbackSql = `CAST(NULL AS NVARCHAR(4000))`) {
     for (const candidate of candidates) {
       const matched = existingByLower.get(String(candidate).toLowerCase());
       if (matched) return asSqlIdentifier(matched);
     }
-    return `CAST(NULL AS NVARCHAR(4000))`;
+    return fallbackSql;
   }
 
   function pickForUpdate(candidates) {
@@ -466,25 +466,29 @@ async function resolveMailQueueColumns() {
     return null;
   }
 
-  const statusRow = rows.find(row => ["status", "estado"].includes(String(row.COLUMN_NAME).toLowerCase()));
-  const statusColumn = pickForUpdate(["status", "estado"]);
+  const idColumn = pickForUpdate(["id", "mailitem_id"]);
+  const statusRow = rows.find(row => ["status", "estado", "sent_status"].includes(String(row.COLUMN_NAME).toLowerCase()));
+  const statusColumn = pickForUpdate(["status", "estado", "sent_status"]);
   const retriesColumn = pickForUpdate(["retries", "retry_count", "reintentos"]);
 
   cachedMailQueueColumns = {
-    toEmail: pick(["to_email", "to", "recipient", "email", "destinatario", "correo"]),
+    id: idColumn ? `${idColumn}` : "CAST(NULL AS BIGINT)",
+    idForWhere: idColumn,
+    toEmail: pick(["to_email", "recipients", "to", "recipient", "email", "destinatario", "correo"]),
     subject: pick(["subject", "asunto", "title", "titulo"]),
+    body: pick(["body", "body_html", "mensaje", "contenido"]),
     status: statusColumn ? statusColumn : "CAST(NULL AS NVARCHAR(20))",
     statusMaxLength: statusRow ? Number(statusRow.CHARACTER_MAXIMUM_LENGTH || 0) : null,
     retries: retriesColumn ? retriesColumn : "CAST(0 AS INT)",
-    maxRetries: pick(["max_retries", "maxRetries", "tope_reintentos"]),
-    errorMessage: pick(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
-    createdAt: pick(["created_at", "createdon", "created_date", "fecha_creacion", "created"]),
-    lastAttempt: pick(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"]),
+    maxRetries: pick(["max_retries", "maxRetries", "tope_reintentos"], "CAST(5 AS INT)"),
+    errorMessage: pick(["error_message", "last_error", "error", "error_msg", "mensaje_error", "errorMessage"]),
+    createdAt: pick(["created_at", "send_request_date", "createdon", "created_date", "fecha_creacion", "created"]),
+    lastAttempt: pick(["last_attempt", "sent_date", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"]),
     statusForWhere: statusColumn,
     retriesForUpdate: retriesColumn,
-    errorMessageForUpdate: pickForUpdate(["error_message", "error", "error_msg", "mensaje_error", "errorMessage"]),
+    errorMessageForUpdate: pickForUpdate(["error_message", "last_error", "error", "error_msg", "mensaje_error", "errorMessage"]),
     errorTypeForUpdate: pickForUpdate(["error_type", "tipo_error", "error_kind"]),
-    lastAttemptForUpdate: pickForUpdate(["last_attempt", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"])
+    lastAttemptForUpdate: pickForUpdate(["last_attempt", "sent_date", "last_try", "ultimo_intento", "fecha_ultimo_intento", "updated_at"])
   };
 
   return cachedMailQueueColumns;
@@ -498,11 +502,11 @@ function statusTokens(columns, semanticStatus) {
   const normalized = String(semanticStatus || "").toLowerCase();
   const singleChar = isSingleCharStatus(columns);
 
-  if (normalized === "failed") return singleChar ? ["X", "F"] : ["Failed"];
-  if (normalized === "sent") return singleChar ? ["E", "S"] : ["Sent"];
-  if (normalized === "processing") return singleChar ? ["R"] : ["Processing"];
+  if (normalized === "failed") return singleChar ? ["X", "F"] : ["Failed", "failed"];
+  if (normalized === "sent") return singleChar ? ["E", "S"] : ["Sent", "sent"];
+  if (normalized === "processing") return singleChar ? ["R"] : ["Processing", "retrying"];
   if (normalized === "pending" || normalized === "waiting") {
-    return singleChar ? ["P"] : ["Waiting", "Pending"];
+    return singleChar ? ["P"] : ["Waiting", "Pending", "unsent", "retrying"];
   }
 
   return [String(semanticStatus || "")];
@@ -512,8 +516,8 @@ function normalizeStatusExpression(statusExpression) {
   return `
   CASE
     WHEN ${statusExpression} IS NULL THEN 'Unknown'
-    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('P','PENDING','WAITING') THEN 'Pending'
-    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('R','PROCESSING') THEN 'Processing'
+    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('P','PENDING','WAITING','UNSENT') THEN 'Pending'
+    WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('R','PROCESSING','RETRYING') THEN 'Processing'
     WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('S','SENT','E') THEN 'Sent'
     WHEN UPPER(CAST(${statusExpression} AS NVARCHAR(20))) IN ('X','F','FAILED') THEN 'Failed'
     ELSE CAST(${statusExpression} AS NVARCHAR(20))
@@ -564,7 +568,7 @@ async function resolveMailProfileExpression() {
     FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = 'dbo'
       AND TABLE_NAME = 'MailQueue'
-      AND COLUMN_NAME IN ('MailProfile', 'sender_profile')
+      AND COLUMN_NAME IN ('MailProfile', 'sender_profile', 'profile_id')
   `);
 
   const namesByLower = new Map(
@@ -579,6 +583,11 @@ async function resolveMailProfileExpression() {
   }
   if (namesByLower.has("sender_profile")) {
     cachedMailProfileExpression = `${asSqlIdentifier(namesByLower.get("sender_profile"))} AS MailProfile`;
+    return cachedMailProfileExpression;
+  }
+
+  if (namesByLower.has("profile_id")) {
+    cachedMailProfileExpression = `${asSqlIdentifier(namesByLower.get("profile_id"))} AS MailProfile`;
     return cachedMailProfileExpression;
   }
 
@@ -668,20 +677,31 @@ app.get("/health", (_req, res) => {
 app.post("/send", authMiddleware, async (req, res) => {
   const { to, subject, body, senderProfile } = req.body;
 
+  const queueColumns = await resolveMailQueueColumns();
+  const idCol = queueColumns.idForWhere || "[id]";
+  const toCol = queueColumns.toEmail;
+  const subjectCol = queueColumns.subject;
+  const bodyCol = queueColumns.body;
+  if ([toCol, subjectCol, bodyCol].some(col => String(col).toUpperCase().startsWith("CAST("))) {
+    return res.status(500).json({ error: "MailQueue no tiene columnas compatibles para insertar (destinatario/asunto/cuerpo)." });
+  }
+
   const result = await query(`
-    INSERT INTO MailQueue (to_email, subject, body)
+    INSERT INTO MailQueue (${toCol}, ${subjectCol}, ${bodyCol})
     OUTPUT INSERTED.*
     VALUES ('${escapeSqlString(to)}', '${escapeSqlString(subject)}', '${escapeSqlString(body)}')
   `);
 
   const mail = result.recordset[0];
+  const resolvedId = mail.id || mail.mailitem_id;
   await mailQueue.add("mail", { ...mail, senderProfile: senderProfile || "default" });
 
-  res.send({ ok: true });
+  res.send({ ok: true, id: resolvedId, idColumn: idCol });
 });
 
 app.get("/mails", authMiddleware, async (_req, res) => {
-  const result = await query("SELECT * FROM MailQueue ORDER BY id DESC");
+  const queueColumns = await resolveMailQueueColumns();
+  const result = await query(`SELECT * FROM MailQueue ORDER BY ${queueColumns.idForWhere || "id"} DESC`);
   res.send(result.recordset);
 });
 
@@ -697,12 +717,16 @@ app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
       return res.status(500).json({ error: "No se detectó una columna de estado compatible." });
     }
 
-    const result = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
-    const mail = result.recordset[0];
+    if (!queueColumns.idForWhere) {
+      return res.status(500).json({ error: "No se detectó una columna ID compatible." });
+    }
+
+    const result = await sqlQuery(`SELECT TOP 1 * FROM MailQueue WHERE ${queueColumns.idForWhere}=@id`, [{ name: "id", type: sql.BigInt, value: id }]);
+    const mail = result[0];
     if (!mail) return res.status(404).send({ error: "Mail no encontrado" });
 
-    const currentStatus = String(mail.status || mail.estado || "");
-    if (currentStatus === "Sent") {
+    const currentStatus = String(mail.status || mail.estado || mail.sent_status || "").toLowerCase();
+    if (["sent", "s", "e"].includes(currentStatus)) {
       return res.status(400).json({ error: "No se puede reintentar un mail ya enviado." });
     }
 
@@ -715,15 +739,15 @@ app.post("/mails/retry/:id", authMiddleware, async (req, res) => {
     await sqlQuery(
       `UPDATE dbo.MailQueue
        SET ${setClauses.join(", ")}
-       WHERE id = @id;`,
+       WHERE ${queueColumns.idForWhere} = @id;`,
       [
-        { name: "id", type: sql.Int, value: id },
+        { name: "id", type: sql.BigInt, value: id },
         { name: "pendingStatus", type: sql.NVarChar(20), value: pendingToken }
       ]
     );
 
-    const refreshed = await query(`SELECT * FROM MailQueue WHERE id=${id}`);
-    const updatedMail = refreshed.recordset[0];
+    const refreshed = await sqlQuery(`SELECT TOP 1 * FROM MailQueue WHERE ${queueColumns.idForWhere}=@id`, [{ name: "id", type: sql.BigInt, value: id }]);
+    const updatedMail = refreshed[0];
     await mailQueue.add("mail", { ...updatedMail, senderProfile: updatedMail.sender_profile || "default" });
 
     res.send({ ok: true, msg: "Mail reenviado a la cola" });
@@ -749,7 +773,10 @@ app.post("/api/queue/delete", authMiddleware, async (req, res) => {
         return res.status(400).json({ error: "No hay IDs válidos para eliminar." });
       }
 
-      whereClauses.push(`id IN (${validIds.join(",")})`);
+      if (!queueColumns.idForWhere) {
+        return res.status(500).json({ error: "No se detectó una columna ID compatible para eliminar." });
+      }
+      whereClauses.push(`${queueColumns.idForWhere} IN (${validIds.join(",")})`);
     } else {
       if (status && queueColumns.statusForWhere) {
         const statusWhere = buildStatusWhere(queueColumns, status, "deleteStatus");
@@ -792,11 +819,13 @@ app.get("/api/metrics", authMiddleware, async (_req, res) => {
     } catch (err) {
       const missingView = String(err?.message || "").toLowerCase().includes("vw_mailqueue_metrics");
       if (!missingView) throw err;
+      const queueColumns = await resolveMailQueueColumns();
+      const normalizedStatus = normalizeStatusExpression(queueColumns.status);
       data = await sqlQuery(`
         SELECT
-          SUM(CASE WHEN [status] IN (N'Waiting',N'P',N'Processing') THEN 1 ELSE 0 END) AS pending,
-          SUM(CASE WHEN [status] = N'Sent' THEN 1 ELSE 0 END) AS sent,
-          SUM(CASE WHEN [status] = N'Failed' THEN 1 ELSE 0 END) AS failed,
+          SUM(CASE WHEN ${normalizedStatus} IN (N'Pending',N'Processing') THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN ${normalizedStatus} = N'Sent' THEN 1 ELSE 0 END) AS sent,
+          SUM(CASE WHEN ${normalizedStatus} = N'Failed' THEN 1 ELSE 0 END) AS failed,
           COUNT(*) AS total
         FROM dbo.MailQueue
       `);
@@ -834,7 +863,7 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
 
     const data = await sqlQuery(
       `SELECT TOP 200
-         id,
+         ${queueColumns.id} AS id,
          ${queueColumns.toEmail} AS to_email,
          ${queueColumns.subject} AS [subject],
          ${normalizeStatusExpression(queueColumns.status)} AS [status],
@@ -848,7 +877,7 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
          ${queueColumns.createdAt} AS created_at,
          ${queueColumns.lastAttempt} AS last_attempt
        FROM dbo.MailQueue ${where}
-       ORDER BY id DESC`,
+       ORDER BY ${queueColumns.id} DESC`,
       inputs
     );
     res.json(data);
