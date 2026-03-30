@@ -48,8 +48,40 @@
     .badge-retry{background:var(--primary-soft);color:#1d4ed8}
     .badge-noretry{background:#f3f4f6;color:#374151}
     .hidden{display:none}
-    #loginBox{max-width:360px;border:1px solid var(--border);padding:20px;border-radius:12px;background:#fff}
-    #loginError{color:#c62828}
+    .login-shell{
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:linear-gradient(180deg,#eef4ff 0%,#f8fbff 45%,#f3f6fb 100%);
+      padding:24px;
+    }
+    #loginCard{
+      width:100%;
+      max-width:420px;
+      border:1px solid var(--border);
+      border-radius:16px;
+      background:rgba(255,255,255,.95);
+      box-shadow:var(--shadow);
+      padding:28px 24px;
+    }
+    .login-title{margin:0;font-size:28px}
+    .login-subtitle{margin:8px 0 0;color:var(--muted)}
+    .login-form{margin-top:20px;display:flex;flex-direction:column;gap:14px}
+    .login-form input{
+      font-size:15px;
+      padding:11px 12px;
+      border-radius:12px;
+      border:1px solid #cfd7e4;
+      transition:border-color .2s, box-shadow .2s;
+    }
+    .login-form input:focus{
+      border-color:var(--primary);
+      outline:none;
+      box-shadow:0 0 0 3px rgba(37,99,235,.15);
+    }
+    .login-form button{margin-top:2px;padding:11px 14px}
+    #loginError{margin:0;color:#c62828;min-height:18px}
     #feedback{padding:0 20px 14px;color:var(--muted)}
     .sp-inline{display:flex;gap:10px;align-items:flex-end;width:100%;flex-wrap:nowrap}
     .sp-inline .field{min-width:0}
@@ -94,15 +126,22 @@
   </style>
 </head>
 <body>
-  <div id="loginView" class="shell hidden">
-    <h2>Ingreso al panel</h2>
-    <div id="loginBox">
-      <label>Usuario</label>
-      <input id="username" type="text" value="admin"/>
-      <label>Clave</label>
-      <input id="password" type="password" value="admin123"/>
-      <button onclick="doLogin()">Ingresar</button>
-      <p id="loginError"></p>
+  <div id="loginView" class="login-shell hidden">
+    <div id="loginCard">
+      <h2 class="login-title">Ingreso al panel</h2>
+      <p class="login-subtitle">Accedé con tu usuario para administrar Mail Fullboard.</p>
+      <form id="loginForm" class="login-form">
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" type="text" value="admin" autocomplete="username"/>
+        </div>
+        <div class="field">
+          <label for="password">Clave</label>
+          <input id="password" type="password" value="admin123" autocomplete="current-password"/>
+        </div>
+        <button class="primary" type="submit">Ingresar</button>
+        <p id="loginError"></p>
+      </form>
     </div>
   </div>
 
@@ -288,6 +327,15 @@ async function doLogin(){
   }
 
   await checkAuth();
+}
+
+function initLoginForm(){
+  const form = document.getElementById("loginForm");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await doLogin();
+  });
 }
 
 async function doLogout(){
@@ -685,6 +733,7 @@ document.addEventListener("click", (event) => {
   }
 });
 
+initLoginForm();
 checkAuth();
 setInterval(async () => {
   try {
