@@ -1,5 +1,6 @@
+import fs from "fs/promises";
 import nodemailer from "nodemailer";
-import { resolveSmtpAccount } from "../config/senderProfiles.js";
+import { resolveCandidateAccounts } from "../config/senderProfiles.js";
 
 const transportCache = new Map();
 
@@ -26,44 +27,84 @@ function normalizeAddressList(value) {
     .map(item => item.trim())
     .filter(Boolean);
 
-  if (raw.length === 0) return undefined;
-  return raw.join(", ");
+  return raw.length ? raw.join(", ") : undefined;
 }
 
-function normalizeAttachments(value) {
-  if (!value) return undefined;
+function normalizeLegacyPathAttachments(value) {
+  if (!value) return [];
 
-  const paths = String(value)
+  return String(value)
     .split(";")
     .map(item => item.trim())
-    .filter(Boolean);
-
-  if (paths.length === 0) return undefined;
-  return paths.map(filePath => ({ path: filePath }));
+    .filter(Boolean)
+    .map(filePath => ({ path: filePath }));
 }
 
-export async function sendMail(mail) {
-  const requestedProfile = mail.sender_profile || mail.senderProfile || mail.MailProfile || "default";
-  const account = resolveSmtpAccount(requestedProfile);
-  const transporter = getTransport(account);
+async function normalizeDbAttachments(attachments) {
+  const normalized = [];
 
+  for (const attachment of attachments || []) {
+    if (attachment?.file_content) {
+      normalized.push({
+        filename: attachment.file_name || "adjunto.bin",
+        contentType: attachment.content_type || undefined,
+        content: Buffer.from(attachment.file_content)
+      });
+      continue;
+    }
+
+    if (attachment?.file_path) {
+      const content = await fs.readFile(attachment.file_path);
+      normalized.push({
+        filename: attachment.file_name || attachment.file_path.split(/[\\/]/).pop() || "adjunto.bin",
+        contentType: attachment.content_type || undefined,
+        content
+      });
+    }
+  }
+
+  return normalized;
+}
+
+function buildMailPayload(mail, account, attachments) {
   const to = normalizeAddressList(mail.to_email || mail.recipients);
   const cc = normalizeAddressList(mail.copy_recipients || mail.cc);
   const bcc = normalizeAddressList(mail.blind_copy_recipients || mail.bcc);
   const body = mail.body || "";
   const bodyFormat = String(mail.body_format || "HTML").toUpperCase();
-  const textBody = bodyFormat === "TEXT" ? body : undefined;
-  const htmlBody = bodyFormat === "TEXT" ? undefined : body;
 
-  return transporter.sendMail({
+  return {
     from: mail.from_address || account.fromEmail,
     to,
     cc,
     bcc,
     replyTo: normalizeAddressList(mail.reply_to),
     subject: mail.subject,
-    html: htmlBody,
-    text: textBody,
-    attachments: normalizeAttachments(mail.file_attachments || mail.attachments)
-  });
+    html: bodyFormat === "TEXT" ? undefined : body,
+    text: bodyFormat === "TEXT" ? body : undefined,
+    attachments
+  };
+}
+
+export async function sendMail(mail, dbAttachments = [], classification = null) {
+  const senderProfile = mail.sender_profile || mail.senderProfile || mail.MailProfile || "default";
+  const allowFallback = Boolean(classification?.allowFallback);
+  const candidates = resolveCandidateAccounts(senderProfile, allowFallback);
+  const dbResolved = await normalizeDbAttachments(dbAttachments);
+  const legacyResolved = normalizeLegacyPathAttachments(mail.file_attachments || mail.attachments);
+  const mergedAttachments = [...dbResolved, ...legacyResolved];
+
+  let lastError = null;
+  for (const account of candidates) {
+    try {
+      const transporter = getTransport(account);
+      const info = await transporter.sendMail(buildMailPayload(mail, account, mergedAttachments));
+      return { info, accountKey: account.key };
+    } catch (err) {
+      lastError = err;
+      if (!allowFallback) break;
+    }
+  }
+
+  throw lastError || new Error("No se pudo enviar el correo");
 }

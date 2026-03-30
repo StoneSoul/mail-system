@@ -36,9 +36,12 @@ function normalizeCredential(rawValue, fallback) {
     .replace(/["']$/, "");
 }
 
-const PANEL_USER = normalizeCredential(process.env.PANEL_USER, "admin");
-const PANEL_PASS = normalizeCredential(process.env.PANEL_PASS, "admin123");
+const PANEL_USER = normalizeCredential(process.env.PANEL_USER);
+const PANEL_PASS = normalizeCredential(process.env.PANEL_PASS);
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 horas
+if (!PANEL_USER || !PANEL_PASS) {
+  throw new Error("PANEL_USER y PANEL_PASS son obligatorios para iniciar el panel web.");
+}
 const SESSION_COOKIE = "mail_panel_session";
 const sessions = new Map();
 

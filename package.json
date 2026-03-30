@@ -17,6 +17,7 @@
     "start:worker": "node worker/worker.js",
     "dev:api": "node --watch api/app.js",
     "dev:worker": "node --watch worker/worker.js",
-    "dev": "npm run dev:api"
+    "dev": "npm run dev:api",
+    "test": "node --test tests/unit/*.test.js"
   }
 }
