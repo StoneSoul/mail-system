@@ -1,10 +1,13 @@
 import axios from "axios";
 
 export async function sendTelegram(msg) {
-  if (!process.env.TG_TOKEN) return;
+  const token = process.env.TG_TOKEN;
+  const chatId = process.env.TG_CHAT;
+  if (!token || !chatId) return;
 
-  await axios.post(`https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`, {
-    chat_id: process.env.TG_CHAT,
-    text: msg
-  });
+  await axios.post(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    { chat_id: chatId, text: msg },
+    { timeout: 5000 }
+  );
 }
