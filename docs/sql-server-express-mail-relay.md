@@ -19,7 +19,9 @@ CREATE TABLE dbo.MailQueue (
     Retries       INT NOT NULL DEFAULT 0,
     LastError     NVARCHAR(2000) NULL,
     CreatedAt     DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-    SentAt        DATETIME2 NULL
+    SentAt        DATETIME2 NULL,
+    sender_profile SYSNAME NULL,
+    source_environment NVARCHAR(64) NULL
 );
 ```
 
@@ -36,7 +38,8 @@ BEGIN
         @Correo NVARCHAR(320),
         @Sub NVARCHAR(500),
         @Bod NVARCHAR(MAX),
-        @File NVARCHAR(4000);
+        @File NVARCHAR(4000),
+        @sender_profile SYSNAME;
 
     WHILE 1 = 1
     BEGIN
@@ -49,7 +52,7 @@ BEGIN
         UPDATE cte
             SET Status = 'P' -- lock lógico por transacción
         OUTPUT inserted.Id, inserted.Correo, inserted.SubjectText,
-               inserted.BodyHtml, inserted.AttachmentPath
+               inserted.BodyHtml, inserted.AttachmentPath, inserted.sender_profile
         INTO #pick;
 
         IF @@ROWCOUNT = 0 BREAK;
@@ -64,7 +67,7 @@ BEGIN
 
         BEGIN TRY
             EXEC msdb.dbo.sp_send_dbmail
-                @profile_name = 'prueba',
+                @profile_name = ISNULL(NULLIF(@sender_profile, ''), 'prueba'),
                 @recipients = @Correo,
                 @subject = @Sub,
                 @body = @Bod,
@@ -98,7 +101,8 @@ END;
 >   Correo NVARCHAR(320),
 >   SubjectText NVARCHAR(500),
 >   BodyHtml NVARCHAR(MAX),
->   AttachmentPath NVARCHAR(4000)
+>   AttachmentPath NVARCHAR(4000),
+>   sender_profile SYSNAME
 > );
 > ```
 
@@ -113,9 +117,9 @@ Con Linked Server (ejemplo), dentro de tu cursor, reemplaza `sp_send_dbmail` por
 
 ```sql
 INSERT INTO [SQLX].[MailRelayDB].[dbo].[MailQueue]
-    (Nombre, Correo, SubjectText, BodyHtml, AttachmentPath)
+    (Nombre, Correo, SubjectText, BodyHtml, AttachmentPath, sender_profile, source_environment)
 VALUES
-    (@NOMBRE, @CORREO, @SUB, @BOD, @FILE);
+    (@NOMBRE, @CORREO, @SUB, @BOD, @FILE, @PROFILE, @AMBIENTE);
 ```
 
 Donde `SQLX` es el nombre del linked server y `MailRelayDB` la base en SQL Express.

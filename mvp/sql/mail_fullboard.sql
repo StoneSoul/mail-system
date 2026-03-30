@@ -15,7 +15,9 @@ BEGIN
         error_type NVARCHAR(100) NULL,
         last_attempt DATETIME NULL,
         created_at DATETIME NOT NULL DEFAULT GETDATE(),
-        MailProfile SYSNAME NULL
+        MailProfile SYSNAME NULL,
+        sender_profile SYSNAME NULL,
+        source_environment NVARCHAR(64) NULL
     );
 END
 GO
@@ -54,7 +56,8 @@ BEGIN
             [subject] NVARCHAR(500),
             [body] NVARCHAR(MAX),
             attachments NVARCHAR(4000),
-            MailProfile SYSNAME
+            MailProfile SYSNAME,
+            sender_profile SYSNAME
         );
     END
 
@@ -66,13 +69,14 @@ BEGIN
         @body NVARCHAR(MAX),
         @attachments NVARCHAR(4000),
         @MailProfile SYSNAME,
+        @sender_profile SYSNAME,
         @ProfileToUse SYSNAME;
 
     WHILE @processed < @MaxItems
     BEGIN
         SELECT
             @id=NULL, @to_email=NULL, @subject=NULL, @body=NULL,
-            @attachments=NULL, @MailProfile=NULL, @ProfileToUse=NULL;
+            @attachments=NULL, @MailProfile=NULL, @sender_profile=NULL, @ProfileToUse=NULL;
 
         ;WITH cte AS (
             SELECT TOP 1 *
@@ -83,8 +87,8 @@ BEGIN
         UPDATE cte
         SET [status] = N'Processing',
             last_attempt = GETDATE()
-        OUTPUT inserted.id, inserted.to_email, inserted.[subject], inserted.[body], inserted.attachments, inserted.MailProfile
-        INTO #tmp_pick(id, to_email, [subject], [body], attachments, MailProfile);
+        OUTPUT inserted.id, inserted.to_email, inserted.[subject], inserted.[body], inserted.attachments, inserted.MailProfile, inserted.sender_profile
+        INTO #tmp_pick(id, to_email, [subject], [body], attachments, MailProfile, sender_profile);
 
         SELECT TOP 1
             @id = id,
@@ -92,14 +96,15 @@ BEGIN
             @subject = [subject],
             @body = [body],
             @attachments = attachments,
-            @MailProfile = MailProfile
+            @MailProfile = MailProfile,
+            @sender_profile = sender_profile
         FROM #tmp_pick;
 
         DELETE FROM #tmp_pick;
 
         IF @id IS NULL BREAK;
 
-        SET @ProfileToUse = ISNULL(NULLIF(LTRIM(RTRIM(@MailProfile)), N''), N'prueba');
+        SET @ProfileToUse = ISNULL(NULLIF(LTRIM(RTRIM(@MailProfile)), N''), ISNULL(NULLIF(LTRIM(RTRIM(@sender_profile)), N''), N'prueba'));
 
         BEGIN TRY
             IF @attachments IS NULL OR LTRIM(RTRIM(@attachments)) = N''
