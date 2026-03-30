@@ -91,7 +91,13 @@ export async function sqlQuery(text, inputs = [], target = "local") {
   const pool = await getPool(target);
   const request = pool.request();
   bindInputs(request, inputs);
-  return request.query(text);
+  const result = await request.query(text);
+  const rows = Array.isArray(result?.recordset) ? result.recordset : [];
+  return Object.assign(rows, {
+    recordset: rows,
+    rowsAffected: result?.rowsAffected || [],
+    output: result?.output || {}
+  });
 }
 
 export async function executeProcedure(name, inputs = [], target = "local") {
