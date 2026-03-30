@@ -1596,5 +1596,5 @@ app.get("/api/audit", authMiddleware, async (_req, res) => {
 // ------------------------
 // Start server
 // ------------------------
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 80);
 app.listen(port, () => console.log(`API running on port ${port}`));

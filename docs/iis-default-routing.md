@@ -1,73 +1,49 @@
-# IIS: redirigir `http://mailboard/` al login del tablero
+# Despliegue directo de Node en `http://host/` (sin IIS)
 
-Si al entrar a `http://192.168.14.4/` (o al hostname DNS, por ejemplo `http://mailboard/`) ves la página de bienvenida de IIS, significa que **IIS está respondiendo con su sitio por defecto** y tu app Node no está siendo publicada en esa ruta.
+Este proyecto ya no requiere IIS como reverse proxy para exponer el login/panel.
+La API unificada (`api/app.js`) puede publicarse directamente en puerto 80.
 
-En este proyecto, el login del tablero se sirve desde `GET /` en la API (`api/app.js`), y el propio HTML decide si mostrar login o panel según sesión (`mvp/web/index.html`).
+## Comportamiento de red
 
-## Opción recomendada (IIS como reverse proxy hacia Node)
+- Puerto por defecto: `80`
+- Override: variable de entorno `PORT`
+- Healthcheck: `GET /health`
+- Login/panel: `GET /`
 
-> Objetivo: que todo lo que llegue a `http://mailboard/` termine en tu app (por ejemplo Node escuchando en `http://127.0.0.1:3000`).
+## Arranque recomendado
 
-### 1) Prerrequisitos en IIS
-
-1. Instalar módulo **URL Rewrite**.
-2. Instalar y habilitar **Application Request Routing (ARR)**.
-3. En ARR Server Proxy Settings, habilitar **Enable proxy**.
-
-### 2) Binding del sitio
-
-En IIS, en el sitio que publicará el tablero:
-
-- Binding HTTP puerto `80`
-- Host name: `mailboard` (o el nombre DNS que vayas a usar)
-
-Y en DNS, crear el registro A/CNAME apuntando a `192.168.14.4`.
-
-### 3) `web.config` para proxy
-
-Crear `web.config` en la raíz del sitio IIS (no en la carpeta de logs) con una regla como esta:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-  <system.webServer>
-    <rewrite>
-      <rules>
-        <rule name="MailSystemReverseProxy" stopProcessing="true">
-          <match url="(.*)" />
-          <action type="Rewrite" url="http://127.0.0.1:3000/{R:1}" appendQueryString="true" />
-          <serverVariables>
-            <set name="HTTP_X_FORWARDED_PROTO" value="http" />
-            <set name="HTTP_X_FORWARDED_HOST" value="{HTTP_HOST}" />
-          </serverVariables>
-        </rule>
-      </rules>
-    </rewrite>
-  </system.webServer>
-</configuration>
+```bash
+npm install
+npm run start:api
 ```
 
-Con esto, al abrir `http://mailboard/`, IIS entregará lo que responde Node en `/` (que en este proyecto es el login/panel).
+Con eso, la aplicación queda disponible en `http://host/`.
 
----
+## Usar otro puerto (compatibilidad)
 
-## Opción rápida (solo redirección, sin proxy)
+```bash
+PORT=8080 npm run start:api
+```
 
-Si solo quieres salir de la home de IIS y mandar a otra URL, puedes usar **HTTP Redirect** en el sitio por defecto:
+Esto mantiene compatibilidad para ambientes donde no sea posible usar `80`.
 
-- Redirect requests to: `http://mailboard:3000/`
-- Status code: `302` o `301`
+## Verificación rápida
 
-⚠️ Esto expone el puerto `3000` al usuario final en la URL. Para producción es preferible reverse proxy.
+1. Confirmar proceso Node levantado.
+2. Validar healthcheck:
+   ```bash
+   curl http://127.0.0.1/health
+   ```
+3. Abrir `http://host/` y validar login + navegación del panel.
 
----
+## Consideraciones para Windows (servicio persistente)
 
-## Checklist de verificación
+Si necesitás arranque automático y ejecución en segundo plano en Windows:
 
-1. `npm run start:api` levantado y escuchando en `3000`.
-2. Desde el server: `curl http://127.0.0.1:3000/health` responde `ok:true`.
-3. En IIS, revisar que el sitio correcto tenga binding `mailboard:80`.
-4. Detener o quitar prioridad del **Default Web Site** si está capturando `*:80`.
-5. Probar desde cliente: `http://mailboard/`.
+1. Crear un servicio para Node (por ejemplo con NSSM o WinSW) que ejecute `npm run start:api`.
+2. Configurar variables de entorno del servicio (`PORT`, `PANEL_USER`, `PANEL_PASS`, etc.).
+3. Definir carpeta de trabajo del servicio en la raíz del repositorio.
+4. Habilitar recuperación automática del servicio ante fallos.
+5. Abrir firewall para el puerto publicado (80 u otro definido en `PORT`).
 
-Si sigue apareciendo el welcome de IIS, casi siempre es conflicto de bindings (sitio equivocado respondiendo en el 80).
+> Nota: en despliegue directo, ya no aplican configuraciones de URL Rewrite/ARR de IIS para enrutar al panel.

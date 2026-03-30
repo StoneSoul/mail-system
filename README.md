@@ -32,9 +32,11 @@ Ejecutar en orden:
 3. `sql/003_attachment_loader_example.sql` (referencia)
 
 ## Inicio
-- API: `npm run start:api`
+- API: `npm run start:api` (usa `PORT`; por defecto `80`)
 - Dispatcher: `node dispatcher/dispatcher.js`
 - Worker: `npm run start:worker`
+
+Healthcheck API: `GET /health` (ejemplo local: `curl http://127.0.0.1/health`).
 
 ## Manejo de errores
 Categorías:
