@@ -143,6 +143,21 @@ const DEFAULT_REMOTE_DATABASES_BY_TARGET = {
 
 const REMOTE_DB_TARGETS = new Set(["prod", "test", "express"]);
 
+function isRecoverableDbReadError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return [
+    "failed to connect",
+    "econnrefused",
+    "etimeout",
+    "login failed",
+    "configuration incomplete",
+    "target 'local'",
+    "invalid object name",
+    "cannot open database",
+    "database"
+  ].some(token => message.includes(token));
+}
+
 function resolveRemoteTarget(rawTarget) {
   const aliases = {
     dttprod: "prod",
@@ -889,6 +904,16 @@ app.get("/api/metrics", authMiddleware, async (_req, res) => {
     res.json(data[0] || {});
   } catch (e) {
     console.error("[/api/metrics] error", e);
+    if (isRecoverableDbReadError(e)) {
+      return res.json({
+        pending: 0,
+        sent: 0,
+        failed: 0,
+        total: 0,
+        degraded: true,
+        warning: `Métricas no disponibles: ${e.message}`
+      });
+    }
     res.status(500).json({ error: e.message });
   }
 });
@@ -941,6 +966,9 @@ app.get("/api/queue", authMiddleware, async (req, res) => {
     res.json(data);
   } catch (e) {
     console.error("[/api/queue] error", e);
+    if (isRecoverableDbReadError(e)) {
+      return res.json([]);
+    }
     res.status(500).json({ error: e.message });
   }
 });
