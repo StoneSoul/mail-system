@@ -305,11 +305,18 @@ async function getAvailableProducersForTarget(target) {
     remote = [];
   }
 
-  const merged = [...configured, ...remote];
+  const configuredDatabases = (getRemoteDatabasesByTarget()[target] || [])
+    .map(sanitizeSqlIdentifier)
+    .filter(Boolean);
+  const shouldRequireSourceDb = configuredDatabases.length > 0;
+
+  const merged = remote.length ? [...remote] : [...configured, ...remote];
   const unique = new Map();
   for (const producer of merged) {
     const normalizedProc = normalizeProcName(producer.procName);
     const normalizedSourceDb = sanitizeSqlIdentifier(producer.sourceDb) || "";
+    if (!normalizedProc) continue;
+    if (shouldRequireSourceDb && !normalizedSourceDb) continue;
     const key = `${normalizedProc.toLowerCase()}::${normalizedSourceDb.toLowerCase()}`;
     if (!key) continue;
     if (!unique.has(key)) {
@@ -1147,7 +1154,8 @@ app.get("/api/db/remote-objects", authMiddleware, async (req, res) => {
 
     const groupedByDatabase = {};
     for (const producer of producers) {
-      const sourceDb = sanitizeSqlIdentifier(producer.sourceDb) || "(sin_base)";
+      const sourceDb = sanitizeSqlIdentifier(producer.sourceDb);
+      if (!sourceDb) continue;
       if (!groupedByDatabase[sourceDb]) groupedByDatabase[sourceDb] = [];
       const key = visibilityKey(target, sourceDb, producer.procName);
       groupedByDatabase[sourceDb].push({
