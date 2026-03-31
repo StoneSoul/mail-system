@@ -538,7 +538,9 @@ function renderProducerOptions(){
   const current = select.value;
 
   visibleProducersCatalog = producersCatalog.filter(producer => {
-    if (!producer?.sourceDb) return true;
+    if (!producer?.sourceDb) {
+      return selectedDbs.size === 0;
+    }
     return selectedDbs.has(producer.sourceDb);
   });
 
