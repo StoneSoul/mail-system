@@ -1482,12 +1482,27 @@ app.post("/api/db/remote-objects/selection", authMiddleware, async (req, res) =>
   try {
     const target = resolveRemoteTarget(req.body?.target || "prod");
     const selected = Array.isArray(req.body?.selectedObjects) ? req.body.selectedObjects : [];
-    const normalizedSelected = selected
-      .map(item => ({
-        sourceDb: sanitizeSqlIdentifier(item?.sourceDb),
-        procName: normalizeProcName(item?.procName)
-      }))
-      .filter(item => item.sourceDb && item.procName);
+    const selectedKeys = new Set(
+      selected
+        .map(item => ({
+          sourceDb: sanitizeSqlIdentifier(item?.sourceDb),
+          procName: normalizeProcName(item?.procName)
+        }))
+        .filter(item => item.sourceDb && item.procName)
+        .map(item => visibilityKey(target, item.sourceDb, item.procName))
+    );
+
+    const available = await getAvailableProducersForTarget(target);
+    const normalizedCatalog = new Map();
+    for (const producer of available) {
+      const sourceDb = sanitizeSqlIdentifier(producer?.sourceDb);
+      const procName = normalizeProcName(producer?.procName);
+      if (!sourceDb || !procName) continue;
+      const key = visibilityKey(target, sourceDb, procName);
+      if (!normalizedCatalog.has(key)) {
+        normalizedCatalog.set(key, { sourceDb, procName });
+      }
+    }
 
     await ensureRemoteVisibilityTable();
     await sqlQuery(
@@ -1496,22 +1511,26 @@ app.post("/api/db/remote-objects/selection", authMiddleware, async (req, res) =>
       [{ name: "target", type: sql.NVarChar(20), value: target }]
     );
 
-    for (const item of normalizedSelected) {
+    let visibleCount = 0;
+    for (const item of normalizedCatalog.values()) {
+      const isVisible = selectedKeys.has(visibilityKey(target, item.sourceDb, item.procName)) ? 1 : 0;
+      if (isVisible === 1) visibleCount += 1;
       await sqlQuery(
         `
           INSERT INTO dbo.MailRemoteProcedureVisibility(Target, SourceDb, ProcName, IsVisible, UpdatedBy)
-          VALUES(@target, @sourceDb, @procName, 1, @updatedBy)
+          VALUES(@target, @sourceDb, @procName, @isVisible, @updatedBy)
         `,
         [
           { name: "target", type: sql.NVarChar(20), value: target },
           { name: "sourceDb", type: sql.NVarChar(128), value: item.sourceDb },
           { name: "procName", type: sql.NVarChar(128), value: item.procName },
+          { name: "isVisible", type: sql.Bit, value: isVisible },
           { name: "updatedBy", type: sql.NVarChar(200), value: req.session?.username || "panel" }
         ]
       );
     }
 
-    res.json({ ok: true, target, selectedCount: normalizedSelected.length });
+    res.json({ ok: true, target, selectedCount: visibleCount, totalCount: normalizedCatalog.size });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
